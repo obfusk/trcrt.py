@@ -53,7 +53,7 @@ else:
   xrange = range
 
 DEFAULT_ID      = os.getpid()
-DEFAULT_MSG     = "Hi" * 24
+DEFAULT_MSG     = b"Hi" * 24
 DEFAULT_SLEEP   = 0.5
 DEFAULT_TIMEOUT = 5
 
@@ -66,7 +66,14 @@ def main(*args):
   return 0
 
 def verbose_ping(addr, count = None, timeout = DEFAULT_TIMEOUT):# {{{1
-  """ping addr verbosely"""
+  """
+  ping addr verbosely
+
+  >>> import trcrt as T
+  >>> T.verbose_ping("example.com", 1)  # doctest: +ELLIPSIS
+  PING example.com (93.184.216.34) 48(76) bytes of data.
+  56 bytes from ...: icmp_req=1 ttl=63 time=... ms
+  """
   info = S.gethostbyname_ex(addr); l = len(DEFAULT_MSG)
   print("PING {} ({}) {}({}) bytes of data." \
     .format(info[0], info[2][0], l, l + 28))
@@ -185,8 +192,8 @@ def icmp_echo_request(ID, seq, data):                           # {{{1
   create ICMP echo request packet
 
   >>> import binascii as B, trcrt as T
-  >>> p = T.icmp_echo_request(3553, 1, "HIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefg")
-  >>> B.hexlify(p)
+  >>> p = T.icmp_echo_request(3553, 1, b"HIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefg")
+  >>> T.b2s(B.hexlify(p))
   '080074980de1000148494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f6061626364656667'
   """
   return icmp_packet(ICMP_ECHO, ID, seq, data)
