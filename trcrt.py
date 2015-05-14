@@ -72,7 +72,11 @@ def verbose_ping(addr, count = None, timeout = DEFAULT_TIMEOUT):# {{{1
     .format(info[0], info[2][0], l, l + 28))
   for (seq, p, td) in ping(addr, count, timeout):
     if p == TIMEOUT:
-      print("timeout!")
+      print("timeout!") # TODO
+    elif is_icmp_dest_unreach(p):
+      fmt = "From {} icmp_seq={} {}"
+      print(fmt.format(p["recv_addr"][0], p["echo"]["seq"],
+                       ICMP_DEST_UNREACHABLE_CODES[p["CODE"]]))
     else:
       fmt = "{} bytes from {}: icmp_req={} ttl={} time={:.2f} ms"
       print(fmt.format(p["length"] - 28, p["recv_addr"][0],
@@ -105,17 +109,22 @@ def send_ping(sock, addr, seq, ID = DEFAULT_ID, msg = DEFAULT_MSG):
   sock.sendto(pkt, (addr, 1))
   return (ID, seq, msg)
 
-# TODO
 def recv_ping(sock, addr, ID, seq, timeout):                    # {{{1
   """receive ping reply"""
   def f(pkt, recv_addr):
-    data = unpack_icmp_echo_reply(pkt)
-    if data and data["ID"] == ID and data["seq"] == seq:
-      data.update(recv_addr = recv_addr, length = len(pkt))
+    data = unpack_icmp(pkt)
+    if data is None: return None
+    data.update(recv_addr = recv_addr, length = len(pkt))
+    if is_icmp_echoreply(data) and data["ID"]  == ID and \
+                                   data["seq"] == seq:
       return data
-    else:
-      print("???", data)  # TODO
-      return None   # ignore
+    if is_icmp_dest_unreach(data):
+      data2 = unpack_icmp(data["data"])
+      if  data2 is not None and is_icmp_echo(data2) and \
+          data2["ID"] == ID and data2["seq"] == seq:
+        data.update(echo = data2)
+        return data
+    return None   # ignore
   return recv_reply(sock, timeout, f)
                                                                 # }}}1
 
@@ -134,14 +143,36 @@ def recv_reply(sock, timeout, f):                               # {{{1
     if time_left <= 0: return TIMEOUT
                                                                 # }}}1
 
-# === ICMP ECHO REPLY & REQUEST =================================== #
+# === ICMP ======================================================== #
 # type (8)       | code (8)       | checksum (16)                   #
+# ================================================================= #
+
+# === ICMP DEST UNREACH =========================================== #
+# unused (16)                     | next-hop MTU (16)               #
+#       IP header + first 8 bytes of original datagram's data       #
+# ================================================================= #
+
+# === ICMP ECHO REPLY & REQUEST =================================== #
 # identifier (16)                 | sequence number (16)            #
 #                           ... data ...                            #
 # ================================================================= #
 
-def unpack_icmp_echo_reply(pkt):
-  """unpack ICMP echo request from IP packet"""
+def is_icmp_dest_unreach(icmp_data):
+  """is ICMP destination unreachable?"""
+  return icmp_data["TYPE"] == ICMP_DEST_UNREACH
+
+def is_icmp_echoreply(icmp_data):
+  """is ICMP echo reply?"""
+  return  dict(TYPE = icmp_data["TYPE"], CODE = icmp_data["CODE"]) \
+            == ICMP_ECHOREPLY
+
+def is_icmp_echo(icmp_data):
+  """is ICMP echo?"""
+  return  dict(TYPE = icmp_data["TYPE"], CODE = icmp_data["CODE"]) \
+            == ICMP_ECHO
+
+def unpack_icmp(pkt):
+  """unpack ICMP packet from IP packet"""
   d = unpack_ip(pkt)
   if d["PROTO"] != S.IPPROTO_ICMP: return None
   icmp_hdr, data = pkt[20:28], pkt[28:]
@@ -158,7 +189,7 @@ def icmp_echo_request(ID, seq, data):                           # {{{1
   >>> B.hexlify(p)
   '080074980de1000148494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f6061626364656667'
   """
-  return icmp_packet(ICMP_ECHO_REQUEST, ID, seq, data)
+  return icmp_packet(ICMP_ECHO, ID, seq, data)
                                                                 # }}}1
 
 def icmp_packet(msg_t, ID, seq, data):
@@ -209,8 +240,46 @@ def internet_checksum(data):                                    # {{{1
   return ~csum & 0xffff
                                                                 # }}}1
 
-ICMP_ECHO_REPLY   = dict(TYPE = 0, CODE = 0)
-ICMP_ECHO_REQUEST = dict(TYPE = 8, CODE = 0)
+ICMP_ECHOREPLY        = dict(TYPE = 0, CODE = 0)
+ICMP_ECHO             = dict(TYPE = 8, CODE = 0)
+
+ICMP_DEST_UNREACH     = 3
+
+ICMP_NET_UNREACH      = 0                                       # {{{1
+ICMP_HOST_UNREACH     = 1
+ICMP_PROT_UNREACH     = 2
+ICMP_PORT_UNREACH     = 3
+ICMP_FRAG_NEEDED      = 4
+ICMP_SR_FAILED        = 5
+ICMP_NET_UNKNOWN      = 6
+ICMP_HOST_UNKNOWN     = 7
+ICMP_HOST_ISOLATED    = 8
+ICMP_NET_ANO          = 9
+ICMP_HOST_ANO         = 10
+ICMP_NET_UNR_TOS      = 11
+ICMP_HOST_UNR_TOS     = 12
+ICMP_PKT_FILTERED     = 13
+ICMP_PREC_VIOLATION   = 14
+ICMP_PREC_CUTOFF      = 15                                      # }}}1
+
+ICMP_DEST_UNREACHABLE_CODES = {                                 # {{{1
+  ICMP_NET_UNREACH    : "Destination Net Unreachable",
+  ICMP_HOST_UNREACH   : "Destination Host Unreachable",
+  ICMP_PROT_UNREACH   : "Destination Protocol Unreachable",
+  ICMP_PORT_UNREACH   : "Destination Port Unreachable",
+  ICMP_FRAG_NEEDED    : "Frag needed and DF set",   # mtu?
+  ICMP_SR_FAILED      : "Source Route Failed",
+  ICMP_NET_UNKNOWN    : "Destination Net Unknown",
+  ICMP_HOST_UNKNOWN   : "Destination Host Unknown",
+  ICMP_HOST_ISOLATED  : "Source Host Isolated",
+  ICMP_NET_ANO        : "Destination Net Prohibited",
+  ICMP_HOST_ANO       : "Destination Host Prohibited",
+  ICMP_NET_UNR_TOS    : "Destination Net Unreachable for Type of Service",
+  ICMP_HOST_UNR_TOS   : "Destination Host Unreachable for Type of Service",
+  ICMP_PKT_FILTERED   : "Packet filtered",
+  ICMP_PREC_VIOLATION : "Precedence Violation",
+  ICMP_PREC_CUTOFF    : "Precedence Cutoff",
+}                                                               # }}}1
 
 TIMEOUT           = "__timeout__"
 
