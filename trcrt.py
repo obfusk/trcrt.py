@@ -34,11 +34,18 @@ if sys.version_info.major == 2:
   def b2s(x):
     """convert bytes to str"""
     return x
+  def s2b(x):
+    """convert str to bytes"""
+    return x
 else:
   def b2s(x):
     """convert bytes to str"""
     if isinstance(x, str): return x
     return x.decode("utf8")
+  def s2b(x):
+    """convert str to bytes"""
+    if isinstance(x, bytes): return x
+    return x.encode("utf8")
   xrange = range
 
 # TODO
@@ -77,9 +84,9 @@ def internet_checksum(data):                                    # {{{1
   calculate internet checksum as per RFC 1071
 
   >>> import binascii as B, trcrt as T
-  >>> x = B.unhexlify("0001f203f4f5f6f7")
+  >>> x = B.unhexlify(b"0001f203f4f5f6f7")
   >>> c = T.internet_checksum(x)
-  >>> B.hexlify(T.i2b(c))
+  >>> T.b2s(B.hexlify(T.i2b(c)))
   'ddf2'
   """
   csum = 0; count = len(data); i = 0;
@@ -103,7 +110,7 @@ def b2i(x):
 def i2b(x, n = 1):
   """convert integer to bytes of length (at least) n"""
   if isinstance(x, bytes): return x
-  return binascii.unhexlify("%0*x" % (n*2,x))
+  return binascii.unhexlify(s2b("%0*x" % (n*2,x)))
 
 if __name__ == "__main__":
   sys.exit(main(*sys.argv[1:]))
