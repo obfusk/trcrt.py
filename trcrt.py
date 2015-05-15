@@ -21,11 +21,22 @@ Examples
 
 >>> import trcrt as T
 
+>>> T.verbose_traceroute_icmp("localhost")        # doctest: +ELLIPSIS
+traceroute to localhost (127.0.0.1), 30 hops max, 48 byte packets
+ 1  localhost (127.0.0.1)  ... ms  ... ms  ... ms
+
+>>> T.verbose_traceroute_icmp("example.com")      # doctest: +ELLIPSIS
+traceroute to example.com (93.184.216.34), 30 hops max, 48 byte packets
+ 1  ... (...)  ... ms  ... ms  ... ms
+ 2  ...
+... ... (...)  ... ms  ... ms  ... ms
+... 93.184.216.34 (93.184.216.34)  ... ms  ... ms  ... ms
+
 ...
 
->>> T.verbose_ping("example.com", 1)  # doctest: +ELLIPSIS
+>>> T.verbose_ping("example.com", 1)              # doctest: +ELLIPSIS
 PING example.com (93.184.216.34) 48(76) bytes of data.
-56 bytes from ...: icmp_req=1 ttl=63 time=... ms
+56 bytes from 93.184.216.34 (93.184.216.34): icmp_req=1 ttl=63 time=... ms
 """
                                                                 # }}}1
 
@@ -77,7 +88,9 @@ def main(*args):
     # verbose_ping("192.168.27.254", 1)
     # import code; code.interact(local=globals())
     import doctest; doctest.testmod()
-  except KeyboardInterrupt: pass
+  except KeyboardInterrupt:
+    # return 0 if ping w/o count
+    return 1
   return 0
 
 def verbose_traceroute_icmp(dest,                               # {{{1
@@ -267,7 +280,7 @@ def recv_reply(sock, timeout, f):                               # {{{1
 # ================================================================= #
 
 # === ICMP_TIME_EXCEEDED ========================================== #
-#                             unused                                #
+#                             unused (32)                           #
 #       IP header + first 8 bytes of original datagram's data       #
 # ================================================================= #
 
@@ -425,7 +438,7 @@ ICMP_ERROR_SYMBOLS = {
   ICMP_PROT_UNREACH   : "P",
 }
 
-TIMEOUT           = "__timeout__"
+TIMEOUT               = "__timeout__"
 
 def print_(x):
   """print w/o newline and flush"""
