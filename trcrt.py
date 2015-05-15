@@ -16,11 +16,16 @@
 """
 Python (2+3) traceroute implementation
 
-Example
--------
+Examples
+--------
+
+>>> import trcrt as T
 
 ...
 
+>>> T.verbose_ping("example.com", 1)  # doctest: +ELLIPSIS
+PING example.com (93.184.216.34) 48(76) bytes of data.
+56 bytes from ...: icmp_req=1 ttl=63 time=... ms
 """
                                                                 # }}}1
 
@@ -52,31 +57,126 @@ else:
     return x.encode("utf8")
   xrange = range
 
-DEFAULT_ID      = os.getpid()
-DEFAULT_MSG     = b"Hi" * 24
+DEFAULT_HOPS    = 30
+DEFAULT_QUERIES = 3
+DEFAULT_WAIT    = 0
+
 DEFAULT_SLEEP   = 0.5
 DEFAULT_TIMEOUT = 5
+
+DEFAULT_ID      = os.getpid()
+DEFAULT_MSG     = b"Hi" * 24
 
 # TODO
 def main(*args):
   """..."""
-  import code; code.interact(local=globals())
-  import doctest
-  doctest.testmod()
+  try:
+    # verbose_traceroute_icmp("www.cs.ru.nl")
+    # verbose_ping("router", 1)
+    # verbose_ping("192.168.27.254", 1)
+    # import code; code.interact(local=globals())
+    import doctest; doctest.testmod()
+  except KeyboardInterrupt: pass
   return 0
 
-def verbose_ping(addr, count = None, timeout = DEFAULT_TIMEOUT):# {{{1
-  """
-  ping addr verbosely
+def verbose_traceroute_icmp(dest,                               # {{{1
+                            hops    = DEFAULT_HOPS,
+                            q       = DEFAULT_QUERIES,
+                            timeout = DEFAULT_TIMEOUT,
+                            wait    = DEFAULT_WAIT):
+  """trace route to dest verbosely using ICMP"""
 
-  >>> import trcrt as T
-  >>> T.verbose_ping("example.com", 1)  # doctest: +ELLIPSIS
-  PING example.com (93.184.216.34) 48(76) bytes of data.
-  56 bytes from ...: icmp_req=1 ttl=63 time=... ms
-  """
-  info = S.gethostbyname_ex(addr); l = len(DEFAULT_MSG)
+  l = len(DEFAULT_MSG); info = S.gethostbyname_ex(dest)
+  host, addr = info[0], info[2][0]
+  print("traceroute to {} ({}), {} hops max, {} byte packets" \
+    .format(host, addr, hops, l))
+  for (ttl, pts) in traceroute_icmp(addr, hops, q, timeout, wait):
+    hop_addr = None
+    for i, (p, td) in enumerate(pts):
+      if i == 0:
+        print_("{:2d} ".format(ttl))
+      if p == TIMEOUT:
+        print_(" *")
+      else:
+        p_addr = p["recv_addr"][0]
+        if i == 0 or p_addr != hop_addr:
+          hop_addr = p_addr; p_host = S.socket.getfqdn(p_addr)
+          print_(" {} ({})".format(p_host, p_addr))
+        print_("  {:.3f} ms".format(td * 1000))
+        if is_icmp_dest_unreach(p):
+          c = ICMP_ERROR_SYMBOLS.get(p["CODE"], p["CODE"])
+          print_(" !{}".format(c))
+    print()
+                                                                # }}}1
+
+def traceroute_icmp(addr, hops, q, timeout, wait):              # {{{1
+  """yield sets of q probes to addr"""
+
+  seq   = 1; ttl = 1; done = False
+  sock  = S.socket(S.AF_INET, S.SOCK_RAW, S.IPPROTO_ICMP)
+  while ttl <= hops:
+    sock.setsockopt(S.IPPROTO_IP, S.IP_TTL, ttl)
+    pts = []
+    for x in xrange(q):
+      t1  = time.time()
+      ID  = send_probe_icmp(sock, addr, seq)[0]
+      p   = recv_probe_icmp(sock, addr, ID, seq, timeout)
+      t2  = time.time()
+      if p != TIMEOUT and is_icmp_echoreply(p): done = True
+      pts.append((p, t2 - t1)); seq += 1
+    yield (ttl, pts); ttl += 1
+    if done: break
+    if ttl <= hops and wait > 0: time.sleep(wait)
+  sock.close()
+                                                                # }}}1
+
+def send_probe_icmp(sock, addr, seq, ID = DEFAULT_ID,
+                    msg = DEFAULT_MSG):
+  """send ICMP probe"""
+  pkt = icmp_echo_request(ID, seq, msg)
+  sock.sendto(pkt, (addr, 1))
+  return (ID, seq, msg)
+
+def recv_probe_icmp(sock, addr, ID, seq, timeout):              # {{{1
+  """receive ICMP probe reply"""
+
+  chk = lambda x: x["ID"] == ID and x["seq"] == seq
+  def f(pkt, recv_addr):
+    data = unpack_icmp(pkt)
+    if data is None: return None
+    data.update(recv_addr = recv_addr, length = len(pkt))
+    if is_icmp_echoreply(data) and chk(data):
+      return data
+    if is_icmp_ttl_exceeded(data) or is_icmp_dest_unreach(data):
+      data2 = unpack_icmp(data["data"])
+      if data2 is not None and is_icmp_echo(data2) and chk(data2):
+        data.update(echo = data2)
+        return data
+    return None   # ignore
+  return recv_reply(sock, timeout, f)
+                                                                # }}}1
+
+# TODO
+def verbose_traceroute_tcp():
+  pass
+
+# TODO
+def verbose_traceroute_udp():
+  pass
+
+def verbose_ping(dest, count = None, timeout = DEFAULT_TIMEOUT):# {{{1
+  """ping dest verbosely"""
+
+  l = len(DEFAULT_MSG)
+  if dest.split(".")[-1].isdigit():
+    host, addr  = dest, dest
+    show_addr   = lambda x: x
+  else:
+    info        = S.gethostbyname_ex(dest)
+    host, addr  = info[0], info[2][0]
+    show_addr   = lambda x: "{} ({})".format(S.getfqdn(x), x)
   print("PING {} ({}) {}({}) bytes of data." \
-    .format(info[0], info[2][0], l, l + 28))
+    .format(host, addr, l, l + 28))
   for (seq, p, td) in ping(addr, count, timeout):
     if p == TIMEOUT:
       print("timeout!") # TODO
@@ -86,25 +186,23 @@ def verbose_ping(addr, count = None, timeout = DEFAULT_TIMEOUT):# {{{1
                        ICMP_DEST_UNREACHABLE_CODES[p["CODE"]]))
     else:
       fmt = "{} bytes from {}: icmp_req={} ttl={} time={:.2f} ms"
-      print(fmt.format(p["length"] - 28, p["recv_addr"][0],
-                       seq, p["TTL"], td*1000))
+      print(fmt.format(p["length"] - 28, show_addr(p["recv_addr"][0]),
+                       seq, p["TTL"], td * 1000))
   # TODO: statistics
                                                                 # }}}1
 
 def ping(addr, count, timeout):                                 # {{{1
   """yield pings to addr"""
+
   seq = 1; sock = S.socket(S.AF_INET, S.SOCK_RAW, S.IPPROTO_ICMP)
-  while 1:
-    if count is not None:
-      if count <= 0: break
-      count -= 1
+  while count is None or count > 0:
     t1  = time.time()
     ID  = send_ping(sock, addr, seq)[0]
-    ret = recv_ping(sock, addr, ID, seq, timeout)
+    p   = recv_ping(sock, addr, ID, seq, timeout)
     t2  = time.time()
-    yield (seq, ret, t2 - t1)
-    seq += 1
-    time.sleep(DEFAULT_SLEEP)
+    yield (seq, p, t2 - t1); seq += 1
+    if count is not None: count -= 1
+    if count is None or count > 0: time.sleep(DEFAULT_SLEEP)
   sock.close()
                                                                 # }}}1
 
@@ -118,17 +216,17 @@ def send_ping(sock, addr, seq, ID = DEFAULT_ID, msg = DEFAULT_MSG):
 
 def recv_ping(sock, addr, ID, seq, timeout):                    # {{{1
   """receive ping reply"""
+
+  chk = lambda x: x["ID"] == ID and x["seq"] == seq
   def f(pkt, recv_addr):
     data = unpack_icmp(pkt)
     if data is None: return None
     data.update(recv_addr = recv_addr, length = len(pkt))
-    if is_icmp_echoreply(data) and data["ID"]  == ID and \
-                                   data["seq"] == seq:
+    if is_icmp_echoreply(data) and chk(data):
       return data
     if is_icmp_dest_unreach(data):
       data2 = unpack_icmp(data["data"])
-      if  data2 is not None and is_icmp_echo(data2) and \
-          data2["ID"] == ID and data2["seq"] == seq:
+      if data2 is not None and is_icmp_echo(data2) and chk(data2):
         data.update(echo = data2)
         return data
     return None   # ignore
@@ -137,15 +235,16 @@ def recv_ping(sock, addr, ID, seq, timeout):                    # {{{1
 
 def recv_reply(sock, timeout, f):                               # {{{1
   """receive reply"""
+
   time_left = timeout
   while 1:
     t1 = time.time()
-    r, w, x = select.select([sock], [], [], timeout)
-    if r == []: return TIMEOUT
+    rs, _, _ = select.select([sock], [], [], timeout)
+    if rs == []: return TIMEOUT
     t2 = time.time()
     pkt, recv_addr = sock.recvfrom(1024)
-    ret = f(pkt, recv_addr)
-    if ret is not None: return ret
+    r = f(pkt, recv_addr)
+    if r is not None: return r
     time_left -= (t2 - t1)
     if time_left <= 0: return TIMEOUT
                                                                 # }}}1
@@ -154,38 +253,54 @@ def recv_reply(sock, timeout, f):                               # {{{1
 # type (8)       | code (8)       | checksum (16)                   #
 # ================================================================= #
 
-# === ICMP DEST UNREACH =========================================== #
-# unused (16)                     | next-hop MTU (16)               #
-#       IP header + first 8 bytes of original datagram's data       #
-# ================================================================= #
-
-# === ICMP ECHO REPLY & REQUEST =================================== #
+# === ICMP_ECHO & ICMP_ECHOREPLY ================================== #
 # identifier (16)                 | sequence number (16)            #
 #                           ... data ...                            #
 # ================================================================= #
 
-def is_icmp_dest_unreach(icmp_data):
-  """is ICMP destination unreachable?"""
-  return icmp_data["TYPE"] == ICMP_DEST_UNREACH
+# === ICMP_DEST_UNREACHT ========================================== #
+# unused (16)                     | next-hop MTU (16)               #
+#       IP header + first 8 bytes of original datagram's data       #
+# ================================================================= #
 
-def is_icmp_echoreply(icmp_data):
-  """is ICMP echo reply?"""
-  return  dict(TYPE = icmp_data["TYPE"], CODE = icmp_data["CODE"]) \
-            == ICMP_ECHOREPLY
+# === ICMP_TIME_EXCEEDED ========================================== #
+#                             unused                                #
+#       IP header + first 8 bytes of original datagram's data       #
+# ================================================================= #
 
 def is_icmp_echo(icmp_data):
-  """is ICMP echo?"""
+  """is ICMP_ECHO?"""
   return  dict(TYPE = icmp_data["TYPE"], CODE = icmp_data["CODE"]) \
             == ICMP_ECHO
 
-def unpack_icmp(pkt):
+def is_icmp_echoreply(icmp_data):
+  """is ICMP_ECHOREPLY?"""
+  return  dict(TYPE = icmp_data["TYPE"], CODE = icmp_data["CODE"]) \
+            == ICMP_ECHOREPLY
+
+def is_icmp_time_exceeded(icmp_data):
+  """is ICMP_TIME_EXCEEDED?"""
+  return icmp_data["TYPE"] == ICMP_TIME_EXCEEDED
+
+def is_icmp_ttl_exceeded(icmp_data):
+  """is ICMP_EXC_TTL?"""
+  return  is_icmp_time_exceeded(icmp_data) and \
+            icmp_data["CODE"] == ICMP_EXC_TTL
+
+def is_icmp_dest_unreach(icmp_data):
+  """is ICMP_DEST_UNREACH?"""
+  return icmp_data["TYPE"] == ICMP_DEST_UNREACH
+
+def unpack_icmp(pkt):                                           # {{{1
   """unpack ICMP packet from IP packet"""
+
   d = unpack_ip(pkt)
   if d["PROTO"] != S.IPPROTO_ICMP: return None
   icmp_hdr, data = pkt[20:28], pkt[28:]
   TYPE, code, _, ID, seq = struct.unpack("!BBHHH", icmp_hdr)
   d.update(TYPE = TYPE, CODE = code, ID = ID, seq = seq, data = data)
   return d
+                                                                # }}}1
 
 def icmp_echo_request(ID, seq, data):                           # {{{1
   """
@@ -196,6 +311,7 @@ def icmp_echo_request(ID, seq, data):                           # {{{1
   >>> T.b2s(B.hexlify(p))
   '080074980de1000148494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f6061626364656667'
   """
+
   return icmp_packet(ICMP_ECHO, ID, seq, data)
                                                                 # }}}1
 
@@ -234,6 +350,7 @@ def internet_checksum(data):                                    # {{{1
   >>> T.b2s(B.hexlify(T.i2b(c)))
   '220d'
   """
+
   csum = 0; count = len(data); i = 0;
   while count > 1:
     csum += b2i(data[i:i+2])
@@ -249,6 +366,16 @@ def internet_checksum(data):                                    # {{{1
 
 ICMP_ECHOREPLY        = dict(TYPE = 0, CODE = 0)
 ICMP_ECHO             = dict(TYPE = 8, CODE = 0)
+
+ICMP_TIME_EXCEEDED    = 11
+
+ICMP_EXC_TTL          = 0
+ICMP_EXC_FRAGTIME     = 1
+
+ICMP_TIME_EXCEEDED_CODES = {
+  ICMP_EXC_TTL        : "Time to live exceeded",
+  ICMP_EXC_FRAGTIME   : "Frag reassembly time exceeded",
+}
 
 ICMP_DEST_UNREACH     = 3
 
@@ -288,7 +415,18 @@ ICMP_DEST_UNREACHABLE_CODES = {                                 # {{{1
   ICMP_PREC_CUTOFF    : "Precedence Cutoff",
 }                                                               # }}}1
 
+# TODO
+ICMP_ERROR_SYMBOLS = {
+  ICMP_NET_UNREACH    : "H",
+  ICMP_HOST_UNREACH   : "N",
+  ICMP_PROT_UNREACH   : "P",
+}
+
 TIMEOUT           = "__timeout__"
+
+def print_(x):
+  """print w/o newline and flush"""
+  print(x, end = ""); sys.stdout.flush()
 
 def b2i(x):
   """convert bytes to integer"""
