@@ -112,11 +112,11 @@ def main(*args):                                                # {{{1
                  help = "use UDP probe packets")
   wait_default = "{} for traceroute and {} for ping" \
     .format(DEFAULT_WAIT, DEFAULT_PING_WAIT)
-  p.add_argument("--sendwait", "-z", dest = "wait", type = int,
+  p.add_argument("--sendwait", "-z", dest = "wait", type = float,
                  action = "store",
                  help = "the time interval between probes "
                         "(default: {})".format(wait_default))
-  p.add_argument("--timeout", "-w", type = int, action = "store",
+  p.add_argument("--timeout", "-w", type = float, action = "store",
                  help = "the timeout "
                         "(default: %(default)s)")
   p.add_argument("--test", action = "store_true",
@@ -232,12 +232,12 @@ def recv_probe_icmp(sock, addr, ID, seq, timeout):              # {{{1
                                                                 # }}}1
 
 # TODO
-def verbose_traceroute_tcp():
-  pass
+def verbose_traceroute_tcp(*_):
+  raise RuntimeError("TODO - not yet implemented")
 
 # TODO
-def verbose_traceroute_udp():
-  pass
+def verbose_traceroute_udp(*_):
+  raise RuntimeError("TODO - not yet implemented")
 
 def verbose_ping(dest, count = None, timeout = DEFAULT_TIMEOUT, # {{{1
                  wait = DEFAULT_PING_WAIT):
