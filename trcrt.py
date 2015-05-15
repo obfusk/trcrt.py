@@ -72,6 +72,7 @@ def main(*args):
   """..."""
   try:
     # verbose_traceroute_icmp("www.cs.ru.nl")
+    # verbose_traceroute_icmp("192.168.27.99")
     # verbose_ping("router", 1)
     # verbose_ping("192.168.27.254", 1)
     # import code; code.interact(local=globals())
@@ -90,41 +91,43 @@ def verbose_traceroute_icmp(dest,                               # {{{1
   host, addr = info[0], info[2][0]
   print("traceroute to {} ({}), {} hops max, {} byte packets" \
     .format(host, addr, hops, l))
-  for (ttl, pts) in traceroute_icmp(addr, hops, q, timeout, wait):
-    hop_addr = None
-    for i, (p, td) in enumerate(pts):
-      if i == 0:
-        print_("{:2d} ".format(ttl))
-      if p == TIMEOUT:
-        print_(" *")
-      else:
-        p_addr = p["recv_addr"][0]
-        if i == 0 or p_addr != hop_addr:
-          hop_addr = p_addr; p_host = S.socket.getfqdn(p_addr)
-          print_(" {} ({})".format(p_host, p_addr))
-        print_("  {:.3f} ms".format(td * 1000))
-        if is_icmp_dest_unreach(p):
-          c = ICMP_ERROR_SYMBOLS.get(p["CODE"], p["CODE"])
-          print_(" !{}".format(c))
-    print()
+  for (i, ttl, j, p, td) in traceroute_icmp(addr, hops, q, timeout,
+                                            wait):
+    if j == 0:
+      if i != 0: print()
+      hop_addr = None
+      print_("{:2d} ".format(ttl))
+    if p == TIMEOUT:
+      print_(" *")
+    else:
+      p_addr = p["recv_addr"][0]
+      if j == 0 or p_addr != hop_addr:
+        hop_addr = p_addr; p_host = S.getfqdn(p_addr)
+        print_(" {} ({})".format(p_host, p_addr))
+      print_("  {:.3f} ms".format(td * 1000))
+      if is_icmp_dest_unreach(p):
+        c = ICMP_ERROR_SYMBOLS.get(p["CODE"], p["CODE"])
+        print_(" !{}".format(c))
+  print()
                                                                 # }}}1
 
 def traceroute_icmp(addr, hops, q, timeout, wait):              # {{{1
   """yield sets of q probes to addr"""
 
-  seq   = 1; ttl = 1; done = False
+  seq   = 1; ttl = 1; i = 0; done = False
   sock  = S.socket(S.AF_INET, S.SOCK_RAW, S.IPPROTO_ICMP)
   while ttl <= hops:
     sock.setsockopt(S.IPPROTO_IP, S.IP_TTL, ttl)
-    pts = []
-    for x in xrange(q):
+    for j in xrange(q):
       t1  = time.time()
       ID  = send_probe_icmp(sock, addr, seq)[0]
       p   = recv_probe_icmp(sock, addr, ID, seq, timeout)
       t2  = time.time()
-      if p != TIMEOUT and is_icmp_echoreply(p): done = True
-      pts.append((p, t2 - t1)); seq += 1
-    yield (ttl, pts); ttl += 1
+      if p != TIMEOUT and is_icmp_echoreply(p) or \
+                          is_icmp_dest_unreach(p):
+        done = True
+      yield (i, ttl, j, p, t2 - t1); seq += 1
+    i += 1; ttl += 1
     if done: break
     if ttl <= hops and wait > 0: time.sleep(wait)
   sock.close()
@@ -417,8 +420,8 @@ ICMP_DEST_UNREACHABLE_CODES = {                                 # {{{1
 
 # TODO
 ICMP_ERROR_SYMBOLS = {
-  ICMP_NET_UNREACH    : "H",
-  ICMP_HOST_UNREACH   : "N",
+  ICMP_NET_UNREACH    : "N",
+  ICMP_HOST_UNREACH   : "H",
   ICMP_PROT_UNREACH   : "P",
 }
 
