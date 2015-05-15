@@ -195,8 +195,8 @@ def traceroute_icmp(addr, hops, q, timeout, wait):              # {{{1
       ID  = send_probe_icmp(sock, addr, seq)[0]
       p   = recv_probe_icmp(sock, addr, ID, seq, timeout)
       t2  = time.time()
-      if p != TIMEOUT and is_icmp_echoreply(p) or \
-                          is_icmp_dest_unreach(p):
+      if p != TIMEOUT and (is_icmp_echoreply(p) or \
+                           is_icmp_dest_unreach(p)):
         done = True
       yield (i, ttl, j, p, t2 - t1); seq += 1
     i += 1; ttl += 1
