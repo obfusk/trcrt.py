@@ -42,6 +42,7 @@ PING example.com (93.184.216.34) 48(76) bytes of data.
 
 from __future__ import print_function
 
+import argparse
 import binascii
 import os
 import select
@@ -68,30 +69,88 @@ else:
     return x.encode("utf8")
   xrange = range
 
-DEFAULT_HOPS    = 30
-DEFAULT_QUERIES = 3
-DEFAULT_WAIT    = 0
+__version__       = "0.0.1"
 
-DEFAULT_SLEEP   = 0.5
-DEFAULT_TIMEOUT = 5
+DEFAULT_HOPS      = 30
+DEFAULT_PING_WAIT = 1
+DEFAULT_QUERIES   = 3
+DEFAULT_TIMEOUT   = 5
+DEFAULT_WAIT      = 0
 
-DEFAULT_ID      = os.getpid()
-DEFAULT_MSG     = b"Hi" * 24
+DEFAULT_ID        = os.getpid()
+DEFAULT_MSG       = b"Hi" * 24
 
-# TODO
-def main(*args):
-  """..."""
+def main(*args):                                                # {{{1
+  p = argparse.ArgumentParser(description = "traceroute (& ping)",
+                              epilog      = "the default is to run "
+                                            "traceroute and use "
+                                            "ICMP ECHO probe packets",
+                              add_help    = False)
+  p.add_argument("host", metavar = "HOST", nargs = "?",
+                 help = "the name or IP address "
+                        "of the destination host")
+  p.add_argument("--help", action = "help",
+                 help = "show this help message and exit")
+  p.add_argument("--version", action = "version",
+                 version = "%(prog)s {}".format(__version__))
+  p.add_argument("--hops", "-h", type = int, action = "store",
+                 help = "the maximum number of hops (max TTL) "
+                        "(default: %(default)s)")
+  p.add_argument("--queries", "-q", type = int, action = "store",
+                 help = "the number of probe packets per hop "
+                        "(default: %(default)s)")
+  p.add_argument("--ping", "-P", dest = "f", action = "store_const",
+                 const = verbose_ping,
+                 help = "ping (instead of traceroute)")
+  p.add_argument("--count", "-c", type = int, action = "store",
+                 help = "stop after sending COUNT pings")
+  p.add_argument("--tcp", "-T", dest = "f", action = "store_const",
+                 const = verbose_traceroute_tcp,
+                 help = "use TCP SYN probe packets")
+  p.add_argument("--udp", "-U", dest = "f", action = "store_const",
+                 const = verbose_traceroute_udp,
+                 help = "use UDP probe packets")
+  wait_default = "{} for traceroute and {} for ping" \
+    .format(DEFAULT_WAIT, DEFAULT_PING_WAIT)
+  p.add_argument("--sendwait", "-z", dest = "wait", type = int,
+                 action = "store",
+                 help = "the time interval between probes "
+                        "(default: {})".format(wait_default))
+  p.add_argument("--timeout", "-w", type = int, action = "store",
+                 help = "the timeout "
+                        "(default: %(default)s)")
+  p.add_argument("--test", action = "store_true",
+                 help = "run tests (and no traceroute or ping)")
+  p.add_argument("--verbose", "-v", action = "store_true",
+                 help = "run tests verbosely")
+  p.set_defaults(
+    f         = verbose_traceroute_icmp,
+    count     = None,
+    hops      = DEFAULT_HOPS,
+    queries   = DEFAULT_QUERIES,
+    wait      = None,
+    timeout   = DEFAULT_TIMEOUT,
+  )
+  n = p.parse_args(args)
+  if n.test:
+    import doctest
+    doctest.testmod(verbose = n.verbose)
+    return 0
+  if n.host is None:
+    print("{}: error: too few arguments".format(p.prog),
+          file = sys.stderr)
+    return 2
   try:
-    # verbose_traceroute_icmp("www.cs.ru.nl")
-    # verbose_traceroute_icmp("192.168.27.99")
-    # verbose_ping("router", 1)
-    # verbose_ping("192.168.27.254", 1)
-    # import code; code.interact(local=globals())
-    import doctest; doctest.testmod()
+    if n.f == verbose_ping:
+      n.f(n.host, n.count, n.timeout,
+          n.wait if n.wait is not None else DEFAULT_PING_WAIT)
+    else:
+      n.f(n.host, n.hops, n.queries, n.timeout,
+          n.wait if n.wait is not None else DEFAULT_WAIT)
   except KeyboardInterrupt:
-    # return 0 if ping w/o count
-    return 1
+    if not (n.f == verbose_ping and n.count is None): return 1
   return 0
+                                                                # }}}1
 
 def verbose_traceroute_icmp(dest,                               # {{{1
                             hops    = DEFAULT_HOPS,
@@ -180,7 +239,8 @@ def verbose_traceroute_tcp():
 def verbose_traceroute_udp():
   pass
 
-def verbose_ping(dest, count = None, timeout = DEFAULT_TIMEOUT):# {{{1
+def verbose_ping(dest, count = None, timeout = DEFAULT_TIMEOUT, # {{{1
+                 wait = DEFAULT_PING_WAIT):
   """ping dest verbosely"""
 
   l = len(DEFAULT_MSG)
@@ -193,7 +253,7 @@ def verbose_ping(dest, count = None, timeout = DEFAULT_TIMEOUT):# {{{1
     show_addr   = lambda x: "{} ({})".format(S.getfqdn(x), x)
   print("PING {} ({}) {}({}) bytes of data." \
     .format(host, addr, l, l + 28))
-  for (seq, p, td) in ping(addr, count, timeout):
+  for (seq, p, td) in ping(addr, count, timeout, wait):
     if p == TIMEOUT:
       print("timeout!") # TODO
     elif is_icmp_dest_unreach(p):
@@ -207,7 +267,7 @@ def verbose_ping(dest, count = None, timeout = DEFAULT_TIMEOUT):# {{{1
   # TODO: statistics
                                                                 # }}}1
 
-def ping(addr, count, timeout):                                 # {{{1
+def ping(addr, count, timeout, wait):                           # {{{1
   """yield pings to addr"""
 
   seq = 1; sock = S.socket(S.AF_INET, S.SOCK_RAW, S.IPPROTO_ICMP)
@@ -218,7 +278,7 @@ def ping(addr, count, timeout):                                 # {{{1
     t2  = time.time()
     yield (seq, p, t2 - t1); seq += 1
     if count is not None: count -= 1
-    if count is None or count > 0: time.sleep(DEFAULT_SLEEP)
+    if count is None or count > 0: time.sleep(wait)
   sock.close()
                                                                 # }}}1
 
