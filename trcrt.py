@@ -72,6 +72,9 @@ DEFAULT_QUERIES   = 3
 DEFAULT_TIMEOUT   = 5
 DEFAULT_WAIT      = 0
 
+DEFAULT_UDP_PORT  = 33434
+DEFAULT_TCP_PORT  = 80
+
 DEFAULT_ID        = os.getpid()
 DEFAULT_MSG       = b"Hi" * 24
 
@@ -121,12 +124,12 @@ def argument_parser():                                          # {{{1
                  help = "ping (instead of traceroute)")
   p.add_argument("--count", "-c", type = int, action = "store",
                  help = "stop after sending COUNT pings")
-  p.add_argument("--tcp", "-T", dest = "f", action = "store_const",
-                 const = verbose_traceroute_tcp,
-                 help = "use TCP SYN probe packets")
   p.add_argument("--udp", "-U", dest = "f", action = "store_const",
                  const = verbose_traceroute_udp,
                  help = "use UDP probe packets")
+  p.add_argument("--tcp", "-T", dest = "f", action = "store_const",
+                 const = verbose_traceroute_tcp,
+                 help = "use TCP SYN probe packets")
   wait_default = "{} for traceroute and {} for ping" \
     .format(DEFAULT_WAIT, DEFAULT_PING_WAIT)
   p.add_argument("--sendwait", "-z", dest = "wait", type = float,
@@ -187,21 +190,23 @@ def traceroute_icmp(addr, hops, q, timeout, wait):              # {{{1
 
   seq   = 1; ttl = 1; i = 0; done = False
   sock  = S.socket(S.AF_INET, S.SOCK_RAW, S.IPPROTO_ICMP)
-  while ttl <= hops:
-    sock.setsockopt(S.IPPROTO_IP, S.IP_TTL, ttl)
-    for j in xrange(q):
-      t1  = time.time()
-      ID  = send_probe_icmp(sock, addr, seq)[0]
-      p   = recv_probe_icmp(sock, addr, ID, seq, timeout)
-      t2  = time.time()
-      if p != TIMEOUT and (is_icmp_echoreply(p) or \
-                           is_icmp_dest_unreach(p)):
-        done = True
-      yield (i, ttl, j, p, t2 - t1); seq += 1
-    i += 1; ttl += 1
-    if done: break
-    if ttl <= hops and wait > 0: time.sleep(wait)
-  sock.close()
+  try:
+    while ttl <= hops:
+      sock.setsockopt(S.IPPROTO_IP, S.IP_TTL, ttl)
+      for j in xrange(q):
+        t1  = time.time()
+        ID  = send_probe_icmp(sock, addr, seq)[0]
+        p   = recv_probe_icmp(sock, addr, ID, seq, timeout)
+        t2  = time.time()
+        if p != TIMEOUT and (is_icmp_echoreply(p) or \
+                             is_icmp_dest_unreach(p)):
+          done = True
+        yield (i, ttl, j, p, t2 - t1); seq += 1
+      i += 1; ttl += 1
+      if done: break
+      if ttl <= hops and wait > 0: time.sleep(wait)
+  finally:
+    sock.close()
                                                                 # }}}1
 
 def send_probe_icmp(sock, addr, seq, ID = DEFAULT_ID,
@@ -231,11 +236,11 @@ def recv_probe_icmp(sock, addr, ID, seq, timeout):              # {{{1
                                                                 # }}}1
 
 # TODO
-def verbose_traceroute_tcp(*_):
+def verbose_traceroute_udp(*_):
   raise RuntimeError("TODO - not yet implemented")
 
 # TODO
-def verbose_traceroute_udp(*_):
+def verbose_traceroute_tcp(*_):
   raise RuntimeError("TODO - not yet implemented")
 
 def verbose_ping(dest, count = None, timeout = DEFAULT_TIMEOUT, # {{{1
@@ -301,15 +306,17 @@ def ping(addr, count, timeout, wait):                           # {{{1
   """yield pings to addr"""
 
   seq = 1; sock = S.socket(S.AF_INET, S.SOCK_RAW, S.IPPROTO_ICMP)
-  while count is None or count > 0:
-    t1  = time.time()
-    ID  = send_ping(sock, addr, seq)[0]
-    p   = recv_ping(sock, addr, ID, seq, timeout)
-    t2  = time.time()
-    yield (seq, p, t2 - t1); seq += 1
-    if count is not None: count -= 1
-    if count is None or count > 0: time.sleep(wait)
-  sock.close()
+  try:
+    while count is None or count > 0:
+      t1  = time.time()
+      ID  = send_ping(sock, addr, seq)[0]
+      p   = recv_ping(sock, addr, ID, seq, timeout)
+      t2  = time.time()
+      yield (seq, p, t2 - t1); seq += 1
+      if count is not None: count -= 1
+      if count is None or count > 0: time.sleep(wait)
+  finally:
+    sock.close()
                                                                 # }}}1
 
 def send_ping(sock, addr, seq, ID = DEFAULT_ID, msg = DEFAULT_MSG):
@@ -433,6 +440,98 @@ def icmp_header(msg_t, ID, seq, csum):
   """create ICMP header"""
   return struct.pack("!BBHHH", msg_t["TYPE"], msg_t["CODE"],
                                csum, ID, seq)
+
+# === UDP Pseudo IPv4 Header ====================================== #
+#                        source IP address (32)                     #
+#                     destination IP address (32)                   #
+# zeroes (8)     | protocol (8)   | UDP length (16)                 #
+# ================================================================= #
+
+# === UDP ========================================================= #
+# source port (16)                | destination port (16)           #
+# length (16)                     | checksum (16)                   #
+#                           ... data ...                            #
+# ================================================================= #
+
+def udp_packet(source, dest, data):                             # {{{1
+  """
+  create UDP packet
+
+  >>> import binascii as B, trcrt as T
+  >>> p = T.udp_packet(("10.0.2.15", 55530), ("10.0.2.2", 33434), b"@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_")
+  >>> T.b2s(B.hexlify(p))
+  'd8ea829a00289703404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f'
+  """
+
+  s, s_p = source; d, d_p = dest; l = len(data)
+  return udp_header(
+    s_p, d_p, l,
+    udp_checksum(source, dest, udp_header(s_p, d_p, l, 0), data)
+  ) + data
+                                                                # }}}1
+
+def udp_header(s_port, d_port, length, csum):
+  """create UDP header"""
+  return struct.pack("!HHHH", s_port, d_port, length + 8, csum)
+
+def udp_checksum(source, dest, header, data):                   # {{{1
+  """
+  UDP checksum as per RFC 768
+
+  >>> import binascii as B, trcrt as T
+
+  >>> d1 = b"@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_"
+  >>> h1 = T.udp_header(55530, 33434, len(d1), 0)
+  >>> hex(T.udp_checksum(("10.0.2.15", 55530), ("10.0.2.2", 33434), h1, d1))
+  '0x9703'
+
+  >>> d2 = B.unhexlify(b"ffda")
+  >>> h2 = T.udp_header(0, 0, len(d2), 0)
+  >>> ph = T.udp_pseudo_ipv4_header("0.0.0.0", "0.0.0.0", len(d2) + 8)
+  >>> hex(T.internet_checksum(ph + h2 + d2))
+  '0x0'
+  >>> hex(T.udp_checksum(("0.0.0.0", 0), ("0.0.0.0", 0), h2, d2))
+  '0xffff'
+  """
+  s, s_p = source; d, d_p = dest
+  csum = internet_checksum(udp_pseudo_ipv4_header(s, d, len(data) + 8)
+                           + header + data)
+  return csum if csum != 0 else 0xffff
+                                                                # }}}1
+
+def udp_pseudo_ipv4_header(s_ip, d_ip, length):                 # {{{1
+  """
+  UDP pseudo IPv4 header
+
+  >>> import binascii as B, trcrt as T
+  >>> h = T.udp_pseudo_ipv4_header("10.0.2.15", "10.0.2.2", 32 + 8)
+  >>> T.b2s(B.hexlify(h))
+  '0a00020f0a00020200110028'
+  """
+  return  S.inet_aton(s_ip) + S.inet_aton(d_ip) + \
+            struct.pack("!BBH", 0, S.IPPROTO_UDP, length)
+                                                                # }}}1
+
+def udp_get_source_ip_with_socket(dest, port = DEFAULT_UDP_PORT):#{{{1
+  """
+  get source IP for UDP connection to dest
+
+  >>> import trcrt as T
+  >>> T.udp_get_source_ip_with_socket("127.0.0.1")
+  '127.0.0.1'
+  """
+  return with_udp_socket(dest, port, udp_get_source_ip)
+                                                                # }}}1
+
+def udp_get_source_ip(sock):
+  """get source IP from UDP socket"""
+  return sock.getsockname()[0]
+
+def with_udp_socket(dest, port, f):
+  """use UDP socket for something"""
+  s = S.socket(S.AF_INET, S.SOCK_DGRAM)
+  try: s.connect((dest, port)); return f(s)
+  finally: s.close()
 
 # === IPv4 ======================================================== #
 # version | IHL  | DSCP + ECN (8) | length (16)                     #
