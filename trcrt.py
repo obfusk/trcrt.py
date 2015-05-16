@@ -401,7 +401,7 @@ def unpack_icmp(pkt):                                           # {{{1
   """unpack ICMP packet from IP packet"""
 
   d = unpack_ip(pkt)
-  if d["PROTO"] != S.IPPROTO_ICMP: return None
+  if d is None or d["PROTO"] != S.IPPROTO_ICMP: return None
   icmp_hdr, data = pkt[20:28], pkt[28:]
   TYPE, code, _, ID, seq = struct.unpack("!BBHHH", icmp_hdr)
   d.update(TYPE = TYPE, CODE = code, ID = ID, seq = seq, data = data)
@@ -433,18 +433,20 @@ def icmp_header(msg_t, ID, seq, csum):
   return struct.pack("!BBHHH", msg_t["TYPE"], msg_t["CODE"],
                                csum, ID, seq)
 
-# === IP ========================================================== #
-# version (8)    | service type   | length (16)                     #
-# identification (16)             | flags and offset (16)           #
+# === IPv4 ======================================================== #
+# version | IHL  | DSCP + ECN (8) | length (16)                     #
+# identification (16)             | flags + offset (16)             #
 # TTL (8)        | protocol (8)   | checksum (16)                   #
 #                        source IP address (32)                     #
 #                     destination IP address (32)                   #
 # ================================================================= #
 
+# TODO
 def unpack_ip(pkt):
   """unpack IP packet"""
-  ttl, proto = pkt[8], pkt[9]
-  return dict(TTL = b2i(ttl), PROTO = b2i(proto))
+  ihl, ttl, proto = b2i(pkt[0]) & 0xf, b2i(pkt[8]), b2i(pkt[9])
+  if ihl != 5: return None    # ignore IPv4 w/ options (for now)
+  return dict(TTL = ttl, PROTO = proto)
 
 def internet_checksum(data):                                    # {{{1
   """
