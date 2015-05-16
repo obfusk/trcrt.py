@@ -222,7 +222,7 @@ def recv_probe_icmp(sock, addr, ID, seq, timeout):              # {{{1
     if is_icmp_echoreply(data) and chk(data):
       return data
     if is_icmp_exc_ttl(data) or is_icmp_dest_unreach(data):
-      data2 = unpack_icmp(data["data"])
+      data2 = unpack_icmp(data["icmp_data"])
       if data2 is not None and is_icmp_echo(data2) and chk(data2):
         data.update(echo = data2)
         return data
@@ -331,7 +331,7 @@ def recv_ping(sock, addr, ID, seq, timeout):                    # {{{1
     if is_icmp_echoreply(data) and chk(data):
       return data
     if is_icmp_dest_unreach(data):
-      data2 = unpack_icmp(data["data"])
+      data2 = unpack_icmp(data["icmp_data"])
       if data2 is not None and is_icmp_echo(data2) and chk(data2):
         data.update(echo = data2)
         return data
@@ -402,9 +402,10 @@ def unpack_icmp(pkt):                                           # {{{1
 
   d = unpack_ip(pkt)
   if d is None or d["PROTO"] != S.IPPROTO_ICMP: return None
-  icmp_hdr, data = pkt[20:28], pkt[28:]
+  o = d["ip_data_offset"]; icmp_hdr, icmp_data = pkt[o:o+8], pkt[o+8:]
   TYPE, code, _, ID, seq = struct.unpack("!BBHHH", icmp_hdr)
-  d.update(TYPE = TYPE, CODE = code, ID = ID, seq = seq, data = data)
+  d.update(TYPE = TYPE, CODE = code, ID = ID, seq = seq,
+           icmp_data = icmp_data)
   return d
                                                                 # }}}1
 
@@ -441,12 +442,11 @@ def icmp_header(msg_t, ID, seq, csum):
 #                     destination IP address (32)                   #
 # ================================================================= #
 
-# TODO
 def unpack_ip(pkt):
   """unpack IP packet"""
   ihl, ttl, proto = b2i(pkt[0]) & 0xf, b2i(pkt[8]), b2i(pkt[9])
-  if ihl != 5: return None    # ignore IPv4 w/ options (for now)
-  return dict(TTL = ttl, PROTO = proto)
+  if ihl != 5: return None    # ignore IPv4 w/ options -- TODO
+  return dict(TTL = ttl, PROTO = proto, ip_data_offset = 4*ihl)
 
 def internet_checksum(data):                                    # {{{1
   """
