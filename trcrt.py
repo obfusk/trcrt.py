@@ -4,10 +4,10 @@
 #
 # File        : trcrt.py
 # Maintainer  : Felix C. Stegerman <flx@obfusk.net>
-# Date        : 2015-05-14
+# Date        : 2015-05-16
 #
 # Copyright   : Copyright (C) 2015  Felix C. Stegerman
-# Version     : v0.0.1
+# Version     : v0.0.2
 # License     : LGPLv3+
 #
 # --                                                            ; }}}1
@@ -36,22 +36,16 @@ traceroute to example.com (93.184.216.34), 30 hops max, 48 byte packets
 
 >>> T.verbose_ping("example.com", 1)              # doctest: +ELLIPSIS
 PING example.com (93.184.216.34) 48(76) bytes of data.
-56 bytes from 93.184.216.34 (93.184.216.34): icmp_req=1 ttl=63 time=... ms
+56 bytes from 93.184.216.34: icmp_req=1 ttl=63 time=... ms
 """
                                                                 # }}}1
 
 from __future__ import print_function
 
-import argparse
-import binascii
-import os
-import select
+import argparse, binascii, os, select, struct, sys, time
 import socket as S
-import struct
-import sys
-import time
 
-if sys.version_info.major == 2:
+if sys.version_info.major == 2:                                 # {{{1
   def b2s(x):
     """convert bytes to str"""
     return x
@@ -68,8 +62,9 @@ else:
     if isinstance(x, bytes): return x
     return x.encode("utf8")
   xrange = range
+                                                                # }}}1
 
-__version__       = "0.0.1"
+__version__       = "0.0.2"
 
 DEFAULT_HOPS      = 30
 DEFAULT_PING_WAIT = 1
@@ -81,6 +76,28 @@ DEFAULT_ID        = os.getpid()
 DEFAULT_MSG       = b"Hi" * 24
 
 def main(*args):                                                # {{{1
+  n = argument_parser().parse_args(args)
+  if n.test:
+    import doctest
+    doctest.testmod(verbose = n.verbose)
+    return 0
+  if n.host is None:
+    print("{}: error: too few arguments".format(p.prog),
+          file = sys.stderr)
+    return 2
+  try:
+    if n.f == verbose_ping:
+      n.f(n.host, n.count, n.timeout,
+          n.wait if n.wait is not None else DEFAULT_PING_WAIT)
+    else:
+      n.f(n.host, n.hops, n.queries, n.timeout,
+          n.wait if n.wait is not None else DEFAULT_WAIT)
+  except KeyboardInterrupt:
+    if not (n.f == verbose_ping and n.count is None): return 1
+  return 0
+                                                                # }}}1
+
+def argument_parser():                                          # {{{1
   p = argparse.ArgumentParser(description = "traceroute (& ping)",
                               epilog      = "the default is to run "
                                             "traceroute and use "
@@ -131,25 +148,7 @@ def main(*args):                                                # {{{1
     wait      = None,
     timeout   = DEFAULT_TIMEOUT,
   )
-  n = p.parse_args(args)
-  if n.test:
-    import doctest
-    doctest.testmod(verbose = n.verbose)
-    return 0
-  if n.host is None:
-    print("{}: error: too few arguments".format(p.prog),
-          file = sys.stderr)
-    return 2
-  try:
-    if n.f == verbose_ping:
-      n.f(n.host, n.count, n.timeout,
-          n.wait if n.wait is not None else DEFAULT_PING_WAIT)
-    else:
-      n.f(n.host, n.hops, n.queries, n.timeout,
-          n.wait if n.wait is not None else DEFAULT_WAIT)
-  except KeyboardInterrupt:
-    if not (n.f == verbose_ping and n.count is None): return 1
-  return 0
+  return p
                                                                 # }}}1
 
 def verbose_traceroute_icmp(dest,                               # {{{1
@@ -160,7 +159,7 @@ def verbose_traceroute_icmp(dest,                               # {{{1
   """trace route to dest verbosely using ICMP"""
 
   l = len(DEFAULT_MSG); info = S.gethostbyname_ex(dest)
-  host, addr = info[0], info[2][0]
+  host, addr = dest, info[2][0]
   print("traceroute to {} ({}), {} hops max, {} byte packets" \
     .format(host, addr, hops, l))
   for (i, ttl, j, p, td) in traceroute_icmp(addr, hops, q, timeout,
@@ -222,7 +221,7 @@ def recv_probe_icmp(sock, addr, ID, seq, timeout):              # {{{1
     data.update(recv_addr = recv_addr, length = len(pkt))
     if is_icmp_echoreply(data) and chk(data):
       return data
-    if is_icmp_ttl_exceeded(data) or is_icmp_dest_unreach(data):
+    if is_icmp_exc_ttl(data) or is_icmp_dest_unreach(data):
       data2 = unpack_icmp(data["data"])
       if data2 is not None and is_icmp_echo(data2) and chk(data2):
         data.update(echo = data2)
@@ -245,12 +244,11 @@ def verbose_ping(dest, count = None, timeout = DEFAULT_TIMEOUT, # {{{1
 
   l = len(DEFAULT_MSG)
   if dest.split(".")[-1].isdigit():
-    host, addr  = dest, dest
-    show_addr   = lambda x: x
+    host = addr = dest; show_addr = lambda x: x
   else:
-    info        = S.gethostbyname_ex(dest)
-    host, addr  = info[0], info[2][0]
-    show_addr   = lambda x: "{} ({})".format(S.getfqdn(x), x)
+    info = S.gethostbyname_ex(dest); host, addr = info[0], info[2][0]
+    def show_addr(x):
+      f = S.getfqdn(x); return "{} ({})".format(f, x) if f != x else x
   print("PING {} ({}) {}({}) bytes of data." \
     .format(host, addr, l, l + 28))
   for (seq, p, td) in ping(addr, count, timeout, wait):
@@ -261,10 +259,42 @@ def verbose_ping(dest, count = None, timeout = DEFAULT_TIMEOUT, # {{{1
       print(fmt.format(p["recv_addr"][0], p["echo"]["seq"],
                        ICMP_DEST_UNREACHABLE_CODES[p["CODE"]]))
     else:
-      fmt = "{} bytes from {}: icmp_req={} ttl={} time={:.2f} ms"
+      fmt = "{} bytes from {}: icmp_req={} ttl={} time={} ms"
       print(fmt.format(p["length"] - 28, show_addr(p["recv_addr"][0]),
-                       seq, p["TTL"], td * 1000))
+                       seq, p["TTL"], fmt_ms(td)))
   # TODO: statistics
+                                                                # }}}1
+
+def fmt_ms(t):                                                  # {{{1
+  """
+  format time (in s) as ms
+
+  >>> import trcrt as T
+  >>> T.fmt_ms(7.654321)
+  '7654'
+  >>> T.fmt_ms(0.654321)
+  '654'
+  >>> T.fmt_ms(0.054321)
+  '54.3'
+  >>> T.fmt_ms(0.004321)
+  '4.32'
+  >>> T.fmt_ms(0.000321)
+  '0.321'
+  >>> T.fmt_ms(0.000021)
+  '0.021'
+  >>> T.fmt_ms(0.000001)
+  '0.001'
+  """
+
+  tu, tm = int(t * 10**6), int(t * 10**3)
+  if tu >= 10**5:
+    return "{:d}".format(tm)
+  elif tu >= 10**4:
+    return "{:d}.{:01d}".format(tm, (tu%1000)//100)
+  elif tu >= 10**3:
+    return "{:d}.{:02d}".format(tm, (tu%1000)//10)
+  else:
+    return "0.{:03d}".format(tu)
                                                                 # }}}1
 
 def ping(addr, count, timeout, wait):                           # {{{1
@@ -313,7 +343,7 @@ def recv_reply(sock, timeout, f):                               # {{{1
   """receive reply"""
 
   time_left = timeout
-  while 1:
+  while time_left > 0:
     t1 = time.time()
     rs, _, _ = select.select([sock], [], [], timeout)
     if rs == []: return TIMEOUT
@@ -322,7 +352,7 @@ def recv_reply(sock, timeout, f):                               # {{{1
     r = f(pkt, recv_addr)
     if r is not None: return r
     time_left -= (t2 - t1)
-    if time_left <= 0: return TIMEOUT
+  return TIMEOUT
                                                                 # }}}1
 
 # === ICMP ======================================================== #
@@ -358,7 +388,7 @@ def is_icmp_time_exceeded(icmp_data):
   """is ICMP_TIME_EXCEEDED?"""
   return icmp_data["TYPE"] == ICMP_TIME_EXCEEDED
 
-def is_icmp_ttl_exceeded(icmp_data):
+def is_icmp_exc_ttl(icmp_data):
   """is ICMP_EXC_TTL?"""
   return  is_icmp_time_exceeded(icmp_data) and \
             icmp_data["CODE"] == ICMP_EXC_TTL
