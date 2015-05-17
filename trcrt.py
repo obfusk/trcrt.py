@@ -193,6 +193,7 @@ def verbose_traceroute_icmp(dest,
   verbose_traceroute(traceroute_icmp, dest, hops, q, timeout, wait)
 
 def traceroute_icmp(addr, hops, q, timeout, wait):
+  """trace route to dest using ICMP"""
   return traceroute(send_probe_icmp, recv_probe_icmp, [], addr, hops,
                     q, timeout, wait)
 
@@ -219,6 +220,8 @@ def verbose_traceroute_udp(dest,
                      port, True)
 
 def traceroute_udp(addr, hops, q, timeout, wait, port):         # {{{1
+  """trace route to dest using UDP"""
+
   sock = S.socket(S.AF_INET, S.SOCK_RAW, S.IPPROTO_UDP)
   try:
     for x in traceroute(send_probe_udp, recv_probe_udp, [sock], addr,
@@ -250,6 +253,7 @@ def recv_probe_udp(sock, _socks, addr, ID, seq, timeout):       # {{{1
   return recv_probe_reply([sock], timeout, None, handle_wrapped = f)
                                                                 # }}}1
 
+# TODO
 def verbose_traceroute_tcp(dest,
                            hops     = DEFAULT_HOPS,
                            q        = DEFAULT_QUERIES,
@@ -259,12 +263,52 @@ def verbose_traceroute_tcp(dest,
   """trace route to dest verbosely using TCP"""
   verbose_traceroute(traceroute_tcp, dest, hops, q, timeout, wait, port)
 
-# TODO
-def traceroute_tcp(addr, hops, q, timeout, wait, port):
-  return traceroute(send_probe_tcp, recv_probe_icmp, [],
-                    addr, hops, q, timeout, wait, port)
+def traceroute_tcp(addr, hops, q, timeout, wait, port):         # {{{1
+  """trace route to dest using TCP"""
 
-# ... TODO ...
+  sock = S.socket(S.AF_INET, S.SOCK_RAW, S.IPPROTO_TCP)
+  try:
+    for x in traceroute(send_probe_tcp, recv_probe_tcp, [sock], addr,
+                        hops, q, timeout, wait, port):
+      yield x
+  finally:
+    sock.close()
+                                                                # }}}1
+
+# TODO
+def send_probe_tcp(_sock, socks, addr, seq, ttl, port):         # {{{1
+  """send TCP probe"""
+
+  sock = socks[0]; dest = (addr, port)
+  def f(s):
+    source = s.getsockname(); pkt = tcp_packet(source, dest, syn = 1)
+    set_ttl(sock, ttl); sock.sendto(pkt, dest)
+    return (source, dest)
+  return with_udp_socket(dest, f)   # ???
+                                                                # }}}1
+
+def recv_probe_tcp(sock, socks, addr, ID, dest, timeout):       # {{{1
+  """receive TCP probe reply"""
+
+  chk = lambda x: x["source_port"] == ID[1] and \
+                  x["dest_port"] == dest[1]
+  def f(pkt, recv_addr):
+    data = unpack_tcp(pkt)
+    if data is not None and chk(data):
+      if is_tcp_synack(data):
+        send_tcp_rst(socks[0], ID, (addr, port))
+      return data
+  def g(_pkt, recv_addr, data):
+    data2 = unpack_tcp(data["icmp_data"])
+    if data2 is not None and chk(data2): return data
+  return recv_probe_reply([sock], timeout, None, handle_other = f,
+                          handle_wrapped = g)
+                                                                # }}}1
+
+def send_tcp_rst(sock, source, dest):
+  """send TCP RST"""
+  pkt = tcp_packet(source, dest, rst = 1)
+  sock.sendto(pkt, dest)
 
 def verbose_traceroute(f, dest, hops, q, timeout, wait,         # {{{1
                        port = None, port_unreach_ok = False):
@@ -307,8 +351,8 @@ def traceroute(send_probe, recv_probe, socks, addr, hops, q,    # {{{1
     while ttl <= hops:
       for j in xrange(q):
         t1        = time.time()
-        ID, seq_  = send_probe(sock, socks, addr, seq, ttl, **kw)
-        p         = recv_probe(sock, socks, addr, ID, seq_, timeout)
+        x1, x2    = send_probe(sock, socks, addr, seq, ttl, **kw)
+        p         = recv_probe(sock, socks, addr, x1, x2, timeout)
         t2        = time.time()
         if  p != TIMEOUT and is_icmp(p) and \
             (is_icmp_echoreply(p) or is_icmp_dest_unreach(p)):  # TODO
@@ -548,12 +592,6 @@ def icmp_header(msg_t, ID, seq, csum):
   return struct.pack("!BBHHH", msg_t["TYPE"], msg_t["CODE"],
                                csum, ID, seq)
 
-# === UDP Pseudo IPv4 Header ====================================== #
-#                        source IP address (32)                     #
-#                     destination IP address (32)                   #
-# zeroes (8)     | protocol (8)   | UDP length (16)                 #
-# ================================================================= #
-
 # === UDP ========================================================= #
 # source port (16)                | destination port (16)           #
 # length (16)                     | checksum (16)                   #
@@ -608,31 +646,20 @@ def udp_checksum(source, dest, header, data):                   # {{{1
   >>> hex(T.udp_checksum(("10.0.2.15", 55530), ("10.0.2.2", 33434), h1, d1))
   '0x9703'
 
+  >>> u  = S.IPPROTO_UDP
   >>> d2 = B.unhexlify(b"ffda")
   >>> h2 = T.udp_header(0, 0, len(d2), 0)
-  >>> ph = T.udp_pseudo_ipv4_header("0.0.0.0", "0.0.0.0", len(d2) + 8)
+  >>> ph = T.pseudo_ipv4_header("0.0.0.0", "0.0.0.0", len(d2) + 8, u)
   >>> hex(T.internet_checksum(ph + h2 + d2))
   '0x0'
   >>> hex(T.udp_checksum(("0.0.0.0", 0), ("0.0.0.0", 0), h2, d2))
   '0xffff'
   """
-  s, s_p = source; d, d_p = dest
-  csum = internet_checksum(udp_pseudo_ipv4_header(s, d, len(data) + 8)
+
+  s, s_p = source; d, d_p = dest; p = S.IPPROTO_UDP
+  csum = internet_checksum(pseudo_ipv4_header(s, d, len(data) + 8, p)
                            + header + data)
   return csum if csum != 0 else 0xffff
-                                                                # }}}1
-
-def udp_pseudo_ipv4_header(s_ip, d_ip, length):                 # {{{1
-  """
-  UDP pseudo IPv4 header
-
-  >>> import binascii as B, trcrt as T
-  >>> h = T.udp_pseudo_ipv4_header("10.0.2.15", "10.0.2.2", 32 + 8)
-  >>> T.b2s(B.hexlify(h))
-  '0a00020f0a00020200110028'
-  """
-  return  S.inet_aton(s_ip) + S.inet_aton(d_ip) + \
-            struct.pack("!BBH", 0, S.IPPROTO_UDP, length)
                                                                 # }}}1
 
 def with_udp_socket(dest, f):                                   # {{{1
@@ -648,6 +675,144 @@ def with_udp_socket(dest, f):                                   # {{{1
   s = S.socket(S.AF_INET, S.SOCK_DGRAM)
   try: s.connect(dest); return f(s)
   finally: s.close()
+                                                                # }}}1
+
+# === TCP ========================================================= #
+# source port (16)                | destination port (16)           #
+#                        sequence number (16)                       #
+#                  acknowledgment number (16) (if ACK)              #
+# data offset + flags (16)        | window Size (16)                #
+# checksum (16)                   | urgent pointer (16) (if URG)    #
+#                          ... options ...                          #
+#                           ... data ...                            #
+# ================================================================= #
+
+# === TCP data offset + flags ===================================== #
+# |      0|      1|      2|      3|      4|      5|      6|      7| #
+# |        data offset (4)        | reserved (3) = 000    | NS    | #
+# |      8|      9|     10|     11|     12|     13|     14|     15| #
+# | CWR   | ECE   | URG   | ACK   | PSH   | RST   | SYN   | FIN   | #
+# ================================================================= #
+
+def unpack_tcp(pkt):                                            # {{{1
+                                                                # {{{2
+  r"""
+  unpack TCP packet from IP packet
+
+  >>> import binascii as B, trcrt as T
+  >>> d = b"GET / HTTP/1.0\r\n"
+  >>> p = T.tcp_packet(("10.0.2.15", 54474), ("93.184.216.34", 80), 0x01772089, 0x1f9fb402, d, 29200, psh = 1, ack = 1)
+  >>> i = B.unhexlify(b"45" + 8 * b"00" + b"06" + 10 * b"00") # fake IP header
+  >>> x = T.unpack_tcp(i + p)
+  >>> " ".join(str(x[k]) for k in "source_port dest_port seq_n ack_n offset win_sz".split())
+  '54474 80 24584329 530560002 5 29200'
+  >>> T.b2s(x["tcp_opts"])
+  ''
+  >>> T.b2s(x["tcp_data"])
+  'GET / HTTP/1.0\r\n'
+  >>> " ".join("{}={}".format(k,v) for k, v in sorted(x["flags"].items()))
+  'ack=1 cwr=0 ece=0 fin=0 ns=0 psh=1 rst=0 syn=0 urg=0'
+  """                                                           # }}}2
+
+  d = unpack_ip(pkt)
+  if not is_tcp(d): return None
+  o = d["ip_data_offset"]; tcp_hdr = pkt[o:o+20]
+  s_port, d_port, seq_n, ack_n, offset_and_flags, win_sz, _, _ = \
+    struct.unpack("!HHIIHHHH", tcp_hdr)
+  offset = offset_and_flags >> 12; flags = {}
+  if not 5 <= offset <= 15: return None
+  for i, flag in enumerate(reversed(TCP_FLAGS)):
+    flags[flag.lower()] = (offset_and_flags >> i) & 0b1
+  tcp_opts, tcp_data = pkt[o+20:o+offset*4], pkt[o+offset*4:]
+  d.update(source_port  = s_port  , dest_port = d_port,
+           seq_n        = seq_n   , ack_n     = ack_n,
+           offset       = offset  , flags     = flags,
+           win_sz       = win_sz  , tcp_opts  = tcp_opts,
+           tcp_data     = tcp_data)
+  return d
+                                                                # }}}1
+
+def is_tcp_synack(tcp_data):
+  """is TCP SYN+ACK?"""
+  return tcp_data["flags"]["syn"] == 1 and \
+         tcp_data["flags"]["ack"] == 1
+
+def is_tcp_rst(tcp_data):
+  """is TCP RST?"""
+  return tcp_data["flags"]["rst"] == 1
+
+def is_tcp(ip_data):
+  """is TCP packet?"""
+  return ip_data is not None and ip_data["PROTO"] == S.IPPROTO_TCP
+
+def tcp_packet(source, dest, seq_n, ack_n, data = b"",          # {{{1
+               win_sz = 0, **flags):
+  r"""
+  create TCP packet
+
+  >>> import binascii as B, trcrt as T
+  >>> d = b"GET / HTTP/1.0\r\n"
+  >>> p = T.tcp_packet(("10.0.2.15", 54474), ("93.184.216.34", 80), 0x01772089, 0x1f9fb402, d, 29200, psh = 1, ack = 1)
+  >>> T.b2s(B.hexlify(p))
+  'd4ca0050017720891f9fb402501872105f700000474554202f20485454502f312e300d0a'
+  """
+
+  s, s_p = source; d, d_p = dest
+  args = lambda c = 0: [s_p, d_p, seq_n, ack_n, c, win_sz]
+  csum = tcp_checksum(source, dest, tcp_header(*args(), **flags), data)
+  return tcp_header(*args(csum), **flags) + data
+                                                                # }}}1
+
+# TODO
+def tcp_header(s_port, d_port, seq_n, ack_n, csum,              # {{{1
+               win_sz = 0, **flags):
+  """create TCP header"""
+
+  offset = 5; urg_ptr = 0; offset_and_flags = offset << 12
+  for i, flag in enumerate(reversed(TCP_FLAGS)):
+    b = 1 if flags.get(flag.lower(), 0) else 0
+    offset_and_flags |= b << i
+  return struct.pack("!HHIIHHHH", s_port, d_port, seq_n, ack_n,
+                     offset_and_flags, win_sz, csum, urg_ptr)
+                                                                # }}}1
+
+def tcp_checksum(source, dest, header, data):                   # {{{1
+  r"""
+  TCP checksum as per RFC 793
+
+  >>> import trcrt as T
+  >>> d = b"GET / HTTP/1.0\r\n"
+  >>> h = T.tcp_header(54474, 80, 0x01772089, 0x1f9fb402, 0, 29200, psh = 1, ack = 1)
+  >>> hex(T.tcp_checksum(("10.0.2.15", 54474), ("93.184.216.34", 80), h, d))
+  '0x5f70'
+  """
+
+  s, s_p = source; d, d_p = dest; l = len(header); p = S.IPPROTO_TCP
+  return internet_checksum(pseudo_ipv4_header(s, d, l + len(data), p)
+                           + header + data)
+                                                                # }}}1
+
+TCP_FLAGS = "NS CWR ECE URG ACK PSH RST SYN FIN".split()
+
+# === UDP/TCP Pseudo IPv4 Header ================================== #
+#                        source IP address (32)                     #
+#                     destination IP address (32)                   #
+# zeroes (8)     | protocol (8)   | UDP length (16)                 #
+# ================================================================= #
+
+def pseudo_ipv4_header(s_ip, d_ip, length, proto):              # {{{1
+  """
+  UDP/TCP pseudo IPv4 header
+
+  >>> import binascii as B, socket as S, trcrt as T
+  >>> u = S.IPPROTO_UDP
+  >>> h = T.pseudo_ipv4_header("10.0.2.15", "10.0.2.2", 32 + 8, u)
+  >>> T.b2s(B.hexlify(h))
+  '0a00020f0a00020200110028'
+  """
+
+  return  S.inet_aton(s_ip) + S.inet_aton(d_ip) + \
+            struct.pack("!BBH", 0, proto, length)
                                                                 # }}}1
 
 # === IPv4 ======================================================== #
