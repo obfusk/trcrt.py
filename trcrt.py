@@ -7,7 +7,7 @@
 # Date        : 2015-05-16
 #
 # Copyright   : Copyright (C) 2015  Felix C. Stegerman
-# Version     : v0.0.3
+# Version     : v0.1.0
 # License     : LGPLv3+
 #
 # --                                                            ; }}}1
@@ -22,11 +22,11 @@ Examples
 >>> import trcrt as T
 
 >>> T.verbose_traceroute_icmp("localhost")        # doctest: +ELLIPSIS
-traceroute to localhost (127.0.0.1), 30 hops max, 48 byte packets
+traceroute to localhost (127.0.0.1), 30 hops max, 60 byte packets
  1  localhost (127.0.0.1)  ... ms  ... ms  ... ms
 
 >>> T.verbose_traceroute_icmp("example.com")      # doctest: +ELLIPSIS
-traceroute to example.com (93.184.216.34), 30 hops max, 48 byte packets
+traceroute to example.com (93.184.216.34), 30 hops max, 60 byte packets
  1  ... (...)  ... ms  ... ms  ... ms
  2  ...
 ... ... (...)  ... ms  ... ms  ... ms
@@ -34,29 +34,36 @@ traceroute to example.com (93.184.216.34), 30 hops max, 48 byte packets
 
 
 >>> T.verbose_traceroute_udp("localhost")         # doctest: +ELLIPSIS
-traceroute to localhost (127.0.0.1), 30 hops max, 48 byte packets
+traceroute to localhost (127.0.0.1), 30 hops max, 60 byte packets
  1  localhost (127.0.0.1)  ... ms  ... ms  ... ms
 
 >>> T.verbose_traceroute_udp("example.com", q=1)  # doctest: +ELLIPSIS
-traceroute to example.com (93.184.216.34), 30 hops max, 48 byte packets
+traceroute to example.com (93.184.216.34), 30 hops max, 60 byte packets
  1  ... (...)  ... ms
  2  ...
 ... ... (...)  ... ms
 ... 93.184.216.34 (93.184.216.34)  ... ms
 
 
-... TODO ...
+>>> T.verbose_traceroute_tcp("localhost")         # doctest: +ELLIPSIS
+traceroute to localhost (127.0.0.1), 30 hops max, 40 byte packets
+ 1  localhost (127.0.0.1)  ... ms  ... ms  ... ms
+
+>>> T.verbose_traceroute_tcp("example.com", q=1)  # doctest: +ELLIPSIS
+traceroute to example.com (93.184.216.34), 30 hops max, 40 byte packets
+ 1  ... (...)  ... ms
+... 93.184.216.34 (93.184.216.34)  ... ms
 
 
 >>> T.verbose_ping("example.com", 1)              # doctest: +ELLIPSIS
-PING example.com (93.184.216.34) 48(76) bytes of data.
-56 bytes from 93.184.216.34: icmp_req=1 ttl=63 time=... ms
+PING example.com (93.184.216.34) 32(60) bytes of data.
+40 bytes from 93.184.216.34: icmp_req=1 ttl=63 time=... ms
 """
                                                                 # }}}1
 
 from __future__ import print_function
 
-import argparse, binascii, os, select, struct, sys, time
+import argparse, binascii, os, random, select, struct, sys, time
 import socket as S
 
 if sys.version_info.major == 2:                                 # {{{1
@@ -78,9 +85,10 @@ else:
   xrange = range
                                                                 # }}}1
 
-__version__       = "0.0.3"
+__version__       = "0.1.0"
 
 DEFAULT_HOPS      = 30
+DEFAULT_MINTTL    = 1
 DEFAULT_PING_WAIT = 1
 DEFAULT_QUERIES   = 3
 DEFAULT_TIMEOUT   = 5
@@ -90,7 +98,8 @@ DEFAULT_UDP_PORT  = 33434
 DEFAULT_TCP_PORT  = 80
 
 DEFAULT_ID        = os.getpid()
-DEFAULT_MSG       = b"Hi" * 24
+DEFAULT_MSG       = b"Hi" * 16
+DEFAULT_SEQ       = (os.getpid() << 16) | random.randint(0, 0xffff)
 
 def main(*args):                                                # {{{1
   n = argument_parser().parse_args(args)
@@ -104,16 +113,17 @@ def main(*args):                                                # {{{1
     return 2
   try:
     if n.f == verbose_ping:
-      args = [n.count, n.timeout, n.ttl,
-              n.wait if n.wait is not None else DEFAULT_PING_WAIT]
+      f_args = [n.count, n.timeout, n.ttl,
+                n.wait if n.wait is not None else DEFAULT_PING_WAIT]
     else:
-      args = [n.hops, n.queries, n.timeout,
-              n.wait if n.wait is not None else DEFAULT_WAIT]
+      f_args = [n.hops, n.queries, n.timeout,
+                n.ttl  if n.ttl  is not None else DEFAULT_MINTTL,
+                n.wait if n.wait is not None else DEFAULT_WAIT]
       if n.f == verbose_traceroute_udp:
-        args += [n.port if n.port is not None else DEFAULT_UDP_PORT]
+        f_args += [n.port if n.port is not None else DEFAULT_UDP_PORT]
       elif n.f == verbose_traceroute_tcp:
-        args += [n.port if n.port is not None else DEFAULT_TCP_PORT]
-    n.f(n.host, *args)
+        f_args += [n.port if n.port is not None else DEFAULT_TCP_PORT]
+    n.f(n.host, *f_args)
   except KeyboardInterrupt:
     if not (n.f == verbose_ping and n.count is None): return 1
   return 0
@@ -166,7 +176,8 @@ def argument_parser():                                          # {{{1
                  help = "the timeout "
                         "(default: %(default)s)")
   p.add_argument("--ttl", "-t", type = int, action = "store",
-                 help = "the IP time to live for ping")
+                 help = "for ping: the TTL; "
+                        "for traceroute: the first TTL")
   p.add_argument("--test", action = "store_true",
                  help = "run tests (and no traceroute or ping)")
   p.add_argument("--verbose", "-v", action = "store_true",
@@ -188,14 +199,16 @@ def verbose_traceroute_icmp(dest,
                             hops    = DEFAULT_HOPS,
                             q       = DEFAULT_QUERIES,
                             timeout = DEFAULT_TIMEOUT,
+                            ttl     = DEFAULT_MINTTL,
                             wait    = DEFAULT_WAIT):
   """trace route to dest verbosely using ICMP"""
-  verbose_traceroute(traceroute_icmp, dest, hops, q, timeout, wait)
+  verbose_traceroute(traceroute_icmp, dest, hops, q, timeout, ttl,
+                     wait)
 
-def traceroute_icmp(addr, hops, q, timeout, wait):
+def traceroute_icmp(addr, hops, q, timeout, ttl, wait):
   """trace route to dest using ICMP"""
   return traceroute(send_probe_icmp, recv_probe_icmp, [], addr, hops,
-                    q, timeout, wait)
+                    q, timeout, ttl, wait)
 
 def send_probe_icmp(sock, _socks, addr, seq, ttl, ID = DEFAULT_ID,
                     msg = DEFAULT_MSG):
@@ -213,19 +226,20 @@ def verbose_traceroute_udp(dest,
                            hops     = DEFAULT_HOPS,
                            q        = DEFAULT_QUERIES,
                            timeout  = DEFAULT_TIMEOUT,
+                           ttl      = DEFAULT_MINTTL,
                            wait     = DEFAULT_WAIT,
                            port     = DEFAULT_UDP_PORT):
   """trace route to dest verbosely using UDP"""
-  verbose_traceroute(traceroute_udp, dest, hops, q, timeout, wait,
-                     port, True)
+  verbose_traceroute(traceroute_udp, dest, hops, q, timeout, ttl,
+                     wait, port, port_unreach_ok = True)
 
-def traceroute_udp(addr, hops, q, timeout, wait, port):         # {{{1
+def traceroute_udp(addr, hops, q, timeout, ttl, wait, port):    # {{{1
   """trace route to dest using UDP"""
 
   sock = S.socket(S.AF_INET, S.SOCK_RAW, S.IPPROTO_UDP)
   try:
     for x in traceroute(send_probe_udp, recv_probe_udp, [sock], addr,
-                        hops, q, timeout, wait, port):
+                        hops, q, timeout, ttl, wait, port):
       yield x
   finally:
     sock.close()
@@ -243,83 +257,93 @@ def send_probe_udp(_sock, socks, addr, seq, ttl, port,          # {{{1
   return with_udp_socket(dest, f)
                                                                 # }}}1
 
-def recv_probe_udp(sock, _socks, addr, ID, seq, timeout):       # {{{1
+def recv_probe_udp(sock, _socks, addr, source, d_port, timeout): # {{{1
   """receive UDP probe reply"""
 
-  chk = lambda x: x["source_port"] == ID[1] and x["dest_port"] == seq
+  chk = lambda x: (x["source_port"],x["dest_port"]) == \
+                  (source[1],d_port)
   def f(_pkt, recv_addr, data):
     data2 = unpack_udp(data["icmp_data"])
     if data2 is not None and chk(data2): return data
   return recv_probe_reply([sock], timeout, None, handle_wrapped = f)
                                                                 # }}}1
 
-# TODO
 def verbose_traceroute_tcp(dest,
                            hops     = DEFAULT_HOPS,
                            q        = DEFAULT_QUERIES,
                            timeout  = DEFAULT_TIMEOUT,
+                           ttl      = DEFAULT_MINTTL,
                            wait     = DEFAULT_WAIT,
                            port     = DEFAULT_TCP_PORT):
   """trace route to dest verbosely using TCP"""
-  verbose_traceroute(traceroute_tcp, dest, hops, q, timeout, wait, port)
+  verbose_traceroute(traceroute_tcp, dest, hops, q, timeout, ttl,
+                     wait, port, pkt_len = 20 + 20)
 
-def traceroute_tcp(addr, hops, q, timeout, wait, port):         # {{{1
+def traceroute_tcp(addr, hops, q, timeout, ttl, wait, port):    # {{{1
   """trace route to dest using TCP"""
 
-  sock = S.socket(S.AF_INET, S.SOCK_RAW, S.IPPROTO_TCP)
+  sock_udp = S.socket(S.AF_INET, S.SOCK_DGRAM)
   try:
-    for x in traceroute(send_probe_tcp, recv_probe_tcp, [sock], addr,
-                        hops, q, timeout, wait, port):
-      yield x
+    sock_udp.connect((addr, port))
+    done = lambda p: is_tcp(p) and (is_tcp_synack(p) or is_tcp_rst(p))
+    sock = S.socket(S.AF_INET, S.SOCK_RAW, S.IPPROTO_TCP)
+    try:
+      for x in traceroute(send_probe_tcp, recv_probe_tcp,
+                          [sock, sock_udp], addr, hops, q, timeout,
+                          ttl, wait, port, done):
+        yield x
+    finally:
+      sock.close()
   finally:
-    sock.close()
+    sock_udp.close()
+                                                                # }}}1
+
+def send_probe_tcp(_sock, socks, addr, seq, ttl, port):
+  """send TCP probe"""
+  sock, sock_udp  = socks; dest = (addr, port)
+  source          = sock_udp.getsockname()
+  pkt             = tcp_packet(source, dest, DEFAULT_SEQ, syn = 1)
+  set_ttl(sock, ttl); sock.sendto(pkt, dest)
+  return (source, dest)
+
+# TODO
+def recv_probe_tcp(sock, socks, _addr, source, dest, timeout):  # {{{1
+  """receive TCP probe reply"""
+
+  sd            = lambda x: (x["source_port"], x["dest_port"])
+  chk_returned  = lambda x: sd(x) == (source[1],   dest[1])
+  chk_reply     = lambda x: sd(x) == (  dest[1], source[1])
+  def f(pkt, recv_addr):
+    data = unpack_tcp(pkt)
+    if data is not None and chk_reply(data):
+      # NB: it seems that the RST is already being sent; presumably
+      # because the port is not actually open -- TODO
+      # if is_tcp_synack(data): send_tcp_rst(socks[0], source, dest)
+      return data
+  def g(_pkt, recv_addr, data):
+    data2 = unpack_tcp_first8(data["icmp_data"])
+    if data2 is not None and chk_returned(data2): return data
+  return recv_probe_reply([sock, socks[0]], timeout, None,
+                          handle_other = f, handle_wrapped = g)
                                                                 # }}}1
 
 # TODO
-def send_probe_tcp(_sock, socks, addr, seq, ttl, port):         # {{{1
-  """send TCP probe"""
-
-  sock = socks[0]; dest = (addr, port)
-  def f(s):
-    source = s.getsockname(); pkt = tcp_packet(source, dest, syn = 1)
-    set_ttl(sock, ttl); sock.sendto(pkt, dest)
-    return (source, dest)
-  return with_udp_socket(dest, f)   # ???
-                                                                # }}}1
-
-def recv_probe_tcp(sock, socks, addr, ID, dest, timeout):       # {{{1
-  """receive TCP probe reply"""
-
-  chk = lambda x: x["source_port"] == ID[1] and \
-                  x["dest_port"] == dest[1]
-  def f(pkt, recv_addr):
-    data = unpack_tcp(pkt)
-    if data is not None and chk(data):
-      if is_tcp_synack(data):
-        send_tcp_rst(socks[0], ID, (addr, port))
-      return data
-  def g(_pkt, recv_addr, data):
-    data2 = unpack_tcp(data["icmp_data"])
-    if data2 is not None and chk(data2): return data
-  return recv_probe_reply([sock], timeout, None, handle_other = f,
-                          handle_wrapped = g)
-                                                                # }}}1
-
 def send_tcp_rst(sock, source, dest):
   """send TCP RST"""
-  pkt = tcp_packet(source, dest, rst = 1)
-  sock.sendto(pkt, dest)
+  pkt = tcp_packet(source, dest, DEFAULT_SEQ + 1, rst = 1)
+  sock.sendto(pkt, dest)                # what seq_n? -- TODO
 
-def verbose_traceroute(f, dest, hops, q, timeout, wait,         # {{{1
-                       port = None, port_unreach_ok = False):
+def verbose_traceroute(f, dest, hops, q, timeout, minttl, wait, # {{{1
+                       port = None, port_unreach_ok = False,
+                       pkt_len = len(DEFAULT_MSG) + 20 + 8):
   """trace route to dest verbosely using ICMP, UDP or TCP"""
 
-  kw  = dict(port = port) if port is not None else {}
-  l   = len(DEFAULT_MSG); info = S.gethostbyname_ex(dest)
-  host, addr = dest, info[2][0]
+  kw    = dict(port = port) if port is not None else {}
+  info  = S.gethostbyname_ex(dest); host, addr = dest, info[2][0]
   print("traceroute to {} ({}), {} hops max, {} byte packets" \
-    .format(host, addr, hops, l))
-  for (i, ttl, j, p, td) in f(addr, hops, q, timeout, wait, **kw):
+    .format(host, addr, hops, pkt_len))
+  for (i, ttl, j, p, td) in f(addr, hops, q, timeout, minttl, wait,
+                              **kw):
     if j == 0:
       if i != 0: print()
       hop_addr = None
@@ -339,14 +363,15 @@ def verbose_traceroute(f, dest, hops, q, timeout, wait,         # {{{1
   print()
                                                                 # }}}1
 
-# TODO
 def traceroute(send_probe, recv_probe, socks, addr, hops, q,    # {{{1
-               timeout, wait, port = None):
+               timeout, ttl, wait, port = None, other_done = None):
   """yield sets of q probes to addr"""
 
-  kw    = dict(port = port) if port is not None else {}
-  seq   = 1; ttl = 1; i = 0; done = False
-  sock  = S.socket(S.AF_INET, S.SOCK_RAW, S.IPPROTO_ICMP)
+  icmp_done = lambda x: is_icmp(x) and \
+                (is_icmp_echoreply(x) or is_icmp_dest_unreach(x))
+  kw        = dict(port = port) if port is not None else {}
+  seq       = 1; i = 0; done = False
+  sock      = S.socket(S.AF_INET, S.SOCK_RAW, S.IPPROTO_ICMP)
   try:
     while ttl <= hops:
       for j in xrange(q):
@@ -354,8 +379,8 @@ def traceroute(send_probe, recv_probe, socks, addr, hops, q,    # {{{1
         x1, x2    = send_probe(sock, socks, addr, seq, ttl, **kw)
         p         = recv_probe(sock, socks, addr, x1, x2, timeout)
         t2        = time.time()
-        if  p != TIMEOUT and is_icmp(p) and \
-            (is_icmp_echoreply(p) or is_icmp_dest_unreach(p)):  # TODO
+        if  p != TIMEOUT and icmp_done(p) or \
+              (other_done is not None and other_done(p)):
           done = True
         yield (i, ttl, j, p, t2 - t1); seq += 1
       i += 1; ttl += 1
@@ -370,7 +395,7 @@ def verbose_ping(dest, count = None, timeout = DEFAULT_TIMEOUT, # {{{1
                  ttl = None, wait = DEFAULT_PING_WAIT):
   """ping dest verbosely"""
 
-  l = len(DEFAULT_MSG)
+  pkt_len = len(DEFAULT_MSG)
   if dest.split(".")[-1].isdigit():
     host = addr = dest; show_addr = lambda x: x
   else:
@@ -378,7 +403,7 @@ def verbose_ping(dest, count = None, timeout = DEFAULT_TIMEOUT, # {{{1
     def show_addr(x):
       f = S.getfqdn(x); return "{} ({})".format(f, x) if f != x else x
   print("PING {} ({}) {}({}) bytes of data." \
-    .format(host, addr, l, l + 28))
+    .format(host, addr, pkt_len, pkt_len + 20 + 8))
   for (seq, p, td) in ping(addr, count, timeout, ttl, wait):
     if p == TIMEOUT:
       print("timeout!") # TODO
@@ -474,7 +499,6 @@ def recv_probe_reply(socks, timeout, chk = None,                # {{{1
     if data is None:
       return  handle_other(pkt, recv_addr) \
                 if handle_other is not None else None
-    data.update(recv_addr = recv_addr, length = len(pkt))
     if is_icmp_echoreply(data) and chk is not None and chk(data):
       return data
     if is_icmp_exc_ttl(data) or is_icmp_dest_unreach(data):
@@ -499,7 +523,9 @@ def recv_reply(socks, timeout, f):                              # {{{1
     for sock in rs:
       pkt, recv_addr = sock.recvfrom(1024)
       r = f(pkt, recv_addr)
-      if r is not None: return r
+      if r is not None:
+        r.update(recv_addr = recv_addr, length = len(pkt))
+        return r
     timeout -= (time.time() - t1)
   return TIMEOUT
                                                                 # }}}1
@@ -732,6 +758,27 @@ def unpack_tcp(pkt):                                            # {{{1
   return d
                                                                 # }}}1
 
+def unpack_tcp_first8(pkt):                                     # {{{1
+
+  """
+  unpack first 8 bytes of TCP packet from IP packet (from ICMP packet)
+
+  >>> import binascii as B, trcrt as T
+  >>> p = T.tcp_packet(("10.0.2.15", 54474), ("93.184.216.34", 80), 0x01772089)
+  >>> i = B.unhexlify(b"45" + 8 * b"00" + b"06" + 10 * b"00") # fake IP header
+  >>> x = T.unpack_tcp_first8(i + p)
+  >>> " ".join(str(x[k]) for k in "source_port dest_port seq_n".split())
+  '54474 80 24584329'
+  """
+
+  d = unpack_ip(pkt)
+  if not is_tcp(d): return None
+  o = d["ip_data_offset"]; tcp_hdr = pkt[o:o+8]
+  s_port, d_port, seq_n = struct.unpack("!HHI", tcp_hdr)
+  d.update(source_port = s_port, dest_port = d_port, seq_n = seq_n)
+  return d
+                                                                # }}}1
+
 def is_tcp_synack(tcp_data):
   """is TCP SYN+ACK?"""
   return tcp_data["flags"]["syn"] == 1 and \
@@ -745,7 +792,7 @@ def is_tcp(ip_data):
   """is TCP packet?"""
   return ip_data is not None and ip_data["PROTO"] == S.IPPROTO_TCP
 
-def tcp_packet(source, dest, seq_n, ack_n, data = b"",          # {{{1
+def tcp_packet(source, dest, seq_n, ack_n = 0, data = b"",      # {{{1
                win_sz = 0, **flags):
   r"""
   create TCP packet
@@ -768,7 +815,8 @@ def tcp_header(s_port, d_port, seq_n, ack_n, csum,              # {{{1
                win_sz = 0, **flags):
   """create TCP header"""
 
-  offset = 5; urg_ptr = 0; offset_and_flags = offset << 12
+  offset = 5; urg_ptr = 0;    # ignore TCP options and URG -- TODO
+  offset_and_flags = offset << 12
   for i, flag in enumerate(reversed(TCP_FLAGS)):
     b = 1 if flags.get(flag.lower(), 0) else 0
     offset_and_flags |= b << i
@@ -823,6 +871,7 @@ def pseudo_ipv4_header(s_ip, d_ip, length, proto):              # {{{1
 #                     destination IP address (32)                   #
 # ================================================================= #
 
+# TODO
 def unpack_ip(pkt):
   """unpack IP packet"""
   ihl, ttl, proto = b2i(pkt[0]) & 0xf, b2i(pkt[8]), b2i(pkt[9])
@@ -908,7 +957,7 @@ ICMP_DEST_UNREACHABLE_CODES = {                                 # {{{1
   ICMP_PREC_CUTOFF    : "Precedence Cutoff",
 }                                                               # }}}1
 
-# TODO
+# TODO: more!
 ICMP_ERROR_SYMBOLS = {
   ICMP_NET_UNREACH    : "N",
   ICMP_HOST_UNREACH   : "H",

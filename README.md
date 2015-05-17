@@ -5,7 +5,7 @@
     Date        : 2015-05-16
 
     Copyright   : Copyright (C) 2015  Felix C. Stegerman
-    Version     : v0.0.3
+    Version     : v0.1.0
 
 []: }}}1
 
@@ -17,9 +17,29 @@ trcrt.py - python (2+3) traceroute implementation
 
 See `trcrt.py` for the code (with examples).
 
+## Examples
+
+```
+$ sudo ./trcrt.py --ttl 10 --queries 2 example.com
+traceroute to example.com (93.184.216.34), 30 hops max, 60 byte packets
+10  adm-bb4-link.telia.net (213.155.134.42)  34.241 ms  33.123 ms
+11  ldn-bb2-link.telia.net (213.155.136.84)  38.618 ms  37.949 ms
+12  ash-bb4-link.telia.net (62.115.141.90)  112.369 ms ash-bb4-link.telia.net (62.115.141.92)  113.439 ms
+13  ash-b2-link.telia.net (62.115.134.54)  114.954 ms ash-b2-link.telia.net (213.155.133.233)  114.814 ms
+14  edgecast-ic-305901-ash-b2.c.telia.net (213.248.88.42)  112.652 ms edgecast-ic-306715-ash-b2.c.telia.net (213.155.129.62)  112.671 ms
+15  93.184.216.34 (93.184.216.34)  114.613 ms  113.204 ms
+```
+
+```
+$ sudo ./trcrt.py --ping --count 2 example.com
+PING example.com (93.184.216.34) 32(60) bytes of data.
+40 bytes from 93.184.216.34: icmp_req=1 ttl=63 time=122 ms
+40 bytes from 93.184.216.34: icmp_req=2 ttl=63 time=113 ms
+```
+
 ## TODO
 
-* TCP
+* what's up with TCP already getting replies w/ too low TTL? NAT?
 * what if IP header is larger than 20 bytes?
 * optimize?
 
