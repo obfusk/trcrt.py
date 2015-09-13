@@ -2,10 +2,10 @@
 
     File        : README.md
     Maintainer  : Felix C. Stegerman <flx@obfusk.net>
-    Date        : 2015-05-16
+    Date        : 2015-09-12
 
     Copyright   : Copyright (C) 2015  Felix C. Stegerman
-    Version     : v0.1.0
+    Version     : v0.1.1
 
 []: }}}1
 
@@ -39,17 +39,16 @@ PING example.com (93.184.216.34) 32(60) bytes of data.
 
 ## TODO
 
-* what's up with TCP already getting replies w/ too low TTL? NAT?
-* what if IP header is larger than 20 bytes?
+* handle IP headers larger than 20 bytes?
 * optimize?
 
 ## License
 
-LGPLv3+ [1].
+GPLv3+ [1].
 
 ## References
 
-[1] GNU Lesser General Public License, version 3
---- https://www.gnu.org/licenses/lgpl-3.0.html
+[1] GNU General Public License, version 3
+--- https://www.gnu.org/licenses/gpl-3.0.html
 
 []: ! ( vim: set tw=70 sw=2 sts=2 et fdm=marker : )

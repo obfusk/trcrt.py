@@ -4,11 +4,11 @@
 #
 # File        : trcrt.py
 # Maintainer  : Felix C. Stegerman <flx@obfusk.net>
-# Date        : 2015-05-16
+# Date        : 2015-09-12
 #
 # Copyright   : Copyright (C) 2015  Felix C. Stegerman
-# Version     : v0.1.0
-# License     : LGPLv3+
+# Version     : v0.1.1
+# License     : GPLv3+
 #
 # --                                                            ; }}}1
 
@@ -30,7 +30,7 @@ traceroute to example.com (93.184.216.34), 30 hops max, 60 byte packets
  1  ... (...)  ... ms  ... ms  ... ms
  2  ...
 ... ... (...)  ... ms  ... ms  ... ms
-... 93.184.216.34 (93.184.216.34)  ... ms  ... ms  ... ms
+... 93.184.216.34 (93.184.216.34) ... ms ... ms ... ms
 
 
 >>> T.verbose_traceroute_udp("localhost")         # doctest: +ELLIPSIS
@@ -52,12 +52,14 @@ traceroute to localhost (127.0.0.1), 30 hops max, 40 byte packets
 >>> T.verbose_traceroute_tcp("example.com", q=1)  # doctest: +ELLIPSIS
 traceroute to example.com (93.184.216.34), 30 hops max, 40 byte packets
  1  ... (...)  ... ms
+ 2  ...
+... ... (...)  ... ms
 ... 93.184.216.34 (93.184.216.34)  ... ms
 
 
 >>> T.verbose_ping("example.com", 1)              # doctest: +ELLIPSIS
 PING example.com (93.184.216.34) 32(60) bytes of data.
-40 bytes from 93.184.216.34: icmp_req=1 ttl=63 time=... ms
+40 bytes from 93.184.216.34: icmp_req=1 ttl=... time=... ms
 """
                                                                 # }}}1
 
@@ -85,7 +87,7 @@ else:
   xrange = range
                                                                 # }}}1
 
-__version__       = "0.1.0"
+__version__       = "0.1.1"
 
 DEFAULT_HOPS      = 30
 DEFAULT_MINTTL    = 1
@@ -102,7 +104,7 @@ DEFAULT_MSG       = b"Hi" * 16
 DEFAULT_SEQ       = (os.getpid() << 16) | random.randint(0, 0xffff)
 
 def main(*args):                                                # {{{1
-  n = argument_parser().parse_args(args)
+  p = argument_parser(); n = p.parse_args(args)
   if n.test:
     import doctest
     doctest.testmod(verbose = n.verbose)
@@ -184,13 +186,9 @@ def argument_parser():                                          # {{{1
                  help = "run tests verbosely")
   p.set_defaults(
     f         = verbose_traceroute_icmp,
-    count     = None,
     hops      = DEFAULT_HOPS,
-    port      = None,
     queries   = DEFAULT_QUERIES,
-    wait      = None,
     timeout   = DEFAULT_TIMEOUT,
-    ttl       = None,
   )
   return p
                                                                 # }}}1
@@ -379,8 +377,8 @@ def traceroute(send_probe, recv_probe, socks, addr, hops, q,    # {{{1
         x1, x2    = send_probe(sock, socks, addr, seq, ttl, **kw)
         p         = recv_probe(sock, socks, addr, x1, x2, timeout)
         t2        = time.time()
-        if  p != TIMEOUT and icmp_done(p) or \
-              (other_done is not None and other_done(p)):
+        if  p != TIMEOUT and (icmp_done(p) or \
+              (other_done is not None and other_done(p))):
           done = True
         yield (i, ttl, j, p, t2 - t1); seq += 1
       i += 1; ttl += 1
